@@ -1,0 +1,10 @@
+{
+  "name": "Aurora QRP SDR",
+  "description": "Virtual VOIP amateur radio transceiver with real-time spectrum waterfall, virtual propagation physics, directional antennas, rotator control, and CW/SSB modes.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

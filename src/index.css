@@ -1,0 +1,72 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-display: 'Chakra Petch', sans-serif;
+    --font-sans: 'IBM Plex Sans', system-ui, sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+    background-color: #06090f;
+    color: #e2ecf7;
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+.font-display {
+  font-family: var(--font-display);
+}
+
+.font-mono-tabular {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Brushed dark anodized aluminum chassis texture */
+.sdr-chassis {
+  background:
+    repeating-linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0.008) 0px,
+      rgba(255, 255, 255, 0.008) 1px,
+      transparent 1px,
+      transparent 3px
+    ),
+    linear-gradient(180deg, #0c121c 0%, #070b12 52%, #0a1019 100%);
+}
+
+.sdr-panel {
+  background: linear-gradient(180deg, rgba(16, 24, 37, 0.94) 0%, rgba(10, 15, 24, 0.96) 100%);
+  border: 1px solid #1d2c3f;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.sdr-bezel {
+  background: linear-gradient(180deg, #0b111a 0%, #070b11 100%);
+  border: 1px solid #1a2738;
+}
+
+.cyan-readout-glow {
+  text-shadow: 0 0 18px rgba(31, 182, 255, 0.35);
+}
+
+/* Custom sleek dark scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #070b11;
+}
+::-webkit-scrollbar-thumb {
+  background: #1f2f44;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #2f4664;
+}
