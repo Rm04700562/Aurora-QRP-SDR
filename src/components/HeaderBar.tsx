@@ -1,20 +1,21 @@
-import React from 'react';
-import { BookOpen, Power, Radio, Settings, Users, Waves } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { BookOpen, Clock, IdCard, Power, Radio, Settings, ShieldCheck, Users, Waves } from 'lucide-react';
 import { GroupOption, PropagationConditions, ServerOption } from '../types/radio';
 
 export const SERVER_OPTIONS: ServerOption[] = [
-  { id: 'eu', label: 'EU Server (Europe)', region: 'Frankfurt' },
-  { id: 'us', label: 'US East (North America)', region: 'New York' },
-  { id: 'ap', label: 'APAC Server (Asia-Pacific)', region: 'Tokyo' },
-  { id: 'global', label: 'Global QRP Mesh', region: 'Anycast' },
+  { id: 'global', label: 'Global Mesh', region: 'Anycast' },
+  { id: 'eu', label: 'EU Frankfurt', region: 'Frankfurt' },
+  { id: 'us', label: 'US New York', region: 'New York' },
+  { id: 'ap', label: 'APAC Tokyo', region: 'Tokyo' },
 ];
 
 export const GROUP_OPTIONS: GroupOption[] = [
-  { id: 'south-africa', label: 'Group: South Africa' },
-  { id: 'beginners-net', label: 'Group: Beginners Learning Net' },
-  { id: 'europe-dx', label: 'Group: Europe DX' },
-  { id: 'north-america', label: 'Group: North America' },
-  { id: 'cw-club', label: 'Group: QRP CW Club' },
+  { id: 'open-hf', label: 'Open HF Net' },
+  { id: 'south-africa', label: 'South Africa' },
+  { id: 'beginners-net', label: 'Beginners Net' },
+  { id: 'europe-dx', label: 'Europe DX' },
+  { id: 'north-america', label: 'North America' },
+  { id: 'cw-club', label: 'QRP CW Club' },
 ];
 
 interface HeaderBarProps {
@@ -31,6 +32,8 @@ interface HeaderBarProps {
   onChangeServer: (id: string) => void;
   onChangeGroup: (id: string) => void;
   onOpenSettings: () => void;
+  onOpenCallsignRegistry: () => void;
+  onOpenAdmin: () => void;
   onOpenPropagation: () => void;
   onOpenLearn: () => void;
 }
@@ -49,6 +52,8 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
   onChangeServer,
   onChangeGroup,
   onOpenSettings,
+  onOpenCallsignRegistry,
+  onOpenAdmin,
   onOpenPropagation,
   onOpenLearn,
 }) => {
@@ -60,15 +65,35 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
       : 'bg-rose-500';
   const statusLabel =
     wsStatus === 'connected'
-      ? 'Connected'
+      ? 'Live'
       : wsStatus === 'connecting'
-      ? 'Connecting'
-      : 'Offline';
+      ? 'Sync'
+      : 'Off';
+
+  const [utcTimeStr, setUtcTimeStr] = useState(() => {
+    const d = new Date();
+    return `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}:${String(
+      d.getUTCSeconds()
+    ).padStart(2, '0')} UTC`;
+  });
+
+  useEffect(() => {
+    const updateClock = () => {
+      const d = new Date();
+      setUtcTimeStr(
+        `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}:${String(
+          d.getUTCSeconds()
+        ).padStart(2, '0')} UTC`
+      );
+    };
+    const timer = window.setInterval(updateClock, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   return (
-    <header className="flex flex-wrap lg:flex-nowrap items-center justify-between gap-1.5 px-2.5 py-1 border-b border-[#1c2b3d] bg-[#090e16]/95">
+    <header className="flex flex-wrap xl:flex-nowrap items-center justify-between gap-1.5 px-2 py-1 border-b border-[#1c2b3d] bg-[#090e16]/95">
       {/* Left Brand + Power Switch */}
-      <div className="flex items-center gap-2 shrink-0">
+      <div className="flex items-center gap-1.5 shrink-0">
         <button
           type="button"
           onClick={onTogglePower}
@@ -76,7 +101,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
           aria-pressed={isPoweredOn}
           aria-label={isPoweredOn ? 'Power Radio Off' : 'Power Radio On'}
           title={isPoweredOn ? 'Power Off Transceiver' : 'Power On Transceiver'}
-          className={`flex items-center gap-1 px-2 py-0.5 rounded border text-[11px] font-display font-bold tracking-wider uppercase transition-all cursor-pointer shrink-0 ${
+          className={`flex items-center gap-1 px-1.5 py-0.5 rounded border text-[10.5px] font-display font-bold tracking-wider uppercase transition-all cursor-pointer shrink-0 whitespace-nowrap ${
             isPoweredOn
               ? 'bg-emerald-500/15 border-emerald-400/70 text-emerald-300 shadow-[0_0_10px_rgba(16,185,129,0.22)] hover:bg-emerald-500/25'
               : 'bg-[#121824] border-rose-500/60 text-rose-300 shadow-[0_0_8px_rgba(244,63,94,0.18)] hover:border-emerald-400/70 hover:text-emerald-200'
@@ -88,7 +113,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
 
         <div className="flex items-center gap-1.5">
           <div
-            className={`w-5 h-5 rounded border flex items-center justify-center transition-colors ${
+            className={`w-5 h-5 rounded border flex items-center justify-center transition-colors shrink-0 ${
               isPoweredOn
                 ? 'bg-gradient-to-br from-sky-400/20 to-cyan-500/10 border-sky-400/40 text-sky-400'
                 : 'bg-[#0b1018] border-[#1f2c3d] text-slate-600'
@@ -96,20 +121,20 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
           >
             <Radio className="w-3 h-3" />
           </div>
-          <h1 className="font-display text-sm sm:text-base font-bold tracking-wider uppercase whitespace-nowrap">
+          <h1 className="font-display text-xs sm:text-sm font-bold tracking-wider uppercase whitespace-nowrap">
             <span className={isPoweredOn ? 'text-slate-100' : 'text-slate-500'}>AURORA </span>
-            <span className={isPoweredOn ? 'text-sky-400' : 'text-slate-600'}>QRP SDR</span>
+            <span className={isPoweredOn ? 'text-sky-400' : 'text-slate-600'}>100W SDR</span>
           </h1>
         </div>
       </div>
 
-      {/* Right Network, Audio, Propagation & Learning Controls */}
-      <div className="flex flex-wrap lg:flex-nowrap items-center gap-1">
+      {/* Right Controls */}
+      <div className="flex flex-wrap xl:flex-nowrap items-center justify-end gap-1 min-w-0">
         <button
           type="button"
           onClick={onToggleAudio}
           disabled={!isPoweredOn}
-          className={`px-1.5 py-0.5 rounded text-[11px] font-medium border transition-colors whitespace-nowrap shrink-0 ${
+          className={`px-1.5 py-0.5 rounded text-[10.5px] font-medium border transition-colors whitespace-nowrap shrink-0 ${
             !isPoweredOn
               ? 'bg-[#0b1018] border-[#1b2736] text-slate-600 cursor-not-allowed'
               : audioEnabled
@@ -123,8 +148,17 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
         </button>
 
         <div
-          className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-[#223247] bg-[#0b121c] text-[11px] text-slate-200 whitespace-nowrap"
-          title={`${peerCount} operator(s) in current group`}
+          data-testid="utc-clock"
+          className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-[#223247] bg-[#0b121c] font-mono-tabular text-[10.5px] text-sky-300 whitespace-nowrap shrink-0"
+          title="Coordinated Universal Time (UTC)"
+        >
+          <Clock className="w-3 h-3 text-sky-400 shrink-0" aria-hidden="true" />
+          <span>{utcTimeStr}</span>
+        </div>
+
+        <div
+          className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-[#223247] bg-[#0b121c] text-[10.5px] text-slate-200 whitespace-nowrap shrink-0"
+          title={`${peerCount} operator(s) online in room`}
         >
           <span className={`w-1.5 h-1.5 rounded-full ${statusColor}`} aria-hidden="true" />
           <span>{statusLabel}</span>
@@ -139,7 +173,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
           id="header-server-select"
           value={serverId}
           onChange={(e) => onChangeServer(e.target.value)}
-          className="px-1.5 py-0.5 rounded border border-[#23344a] bg-[#0e1623] text-[11px] text-slate-200 focus:outline-none focus:border-sky-400 cursor-pointer max-w-[122px]"
+          className="max-w-[92px] px-1 py-0.5 rounded border border-[#23344a] bg-[#0e1623] text-[10.5px] text-slate-200 focus:outline-none focus:border-sky-400 cursor-pointer truncate"
           aria-label="Select VOIP Server"
         >
           {SERVER_OPTIONS.map((srv) => (
@@ -149,7 +183,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
           ))}
         </select>
 
-        <div className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-[#23344a] bg-[#0e1623]">
+        <div className="flex items-center gap-1 px-1 py-0.5 rounded border border-[#23344a] bg-[#0e1623] shrink-0">
           <Users className="w-3 h-3 text-sky-400 shrink-0" aria-hidden="true" />
           <label className="sr-only" htmlFor="header-group-select">
             VOIP Group
@@ -158,7 +192,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
             id="header-group-select"
             value={groupId}
             onChange={(e) => onChangeGroup(e.target.value)}
-            className="bg-transparent text-[11px] text-slate-200 focus:outline-none cursor-pointer max-w-[126px]"
+            className="max-w-[94px] bg-transparent text-[10.5px] text-slate-200 focus:outline-none cursor-pointer truncate"
             aria-label="Select Radio Group"
           >
             {GROUP_OPTIONS.map((grp) => (
@@ -172,20 +206,31 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
         <button
           type="button"
           onClick={onOpenPropagation}
-          className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-[#23344a] bg-[#0e1623] hover:border-sky-400/60 text-[11px] text-slate-200 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-          title="Adjust virtual solar & ionospheric propagation conditions"
+          className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-[#23344a] bg-[#0e1623] hover:border-sky-400/60 text-[10.5px] text-slate-200 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          title="Adjust ionospheric propagation conditions"
         >
           <Waves className="w-3 h-3 text-sky-400" aria-hidden="true" />
           <span className="font-mono-tabular">
-            SFI {propagation.sfi} · K{propagation.kIndex}
+            SFI {propagation.sfi}·K{propagation.kIndex}
           </span>
         </button>
 
         <button
           type="button"
+          onClick={onOpenCallsignRegistry}
+          data-testid="open-callsign-registry-btn"
+          className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-amber-500/45 bg-amber-500/10 hover:bg-amber-500/20 text-[10.5px] font-medium text-amber-200 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          title="Get HR Call Sign (Non-Hams) or Register Licensed Amateur Call Sign"
+        >
+          <IdCard className="w-3 h-3" aria-hidden="true" />
+          <span>HR / Call</span>
+        </button>
+
+        <button
+          type="button"
           onClick={onOpenLearn}
-          className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-emerald-500/40 bg-emerald-500/10 hover:bg-emerald-500/20 text-[11px] font-medium text-emerald-300 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-          title="Beginner Amateur Radio Guide & Practice Checklist"
+          className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-emerald-500/40 bg-emerald-500/10 hover:bg-emerald-500/20 text-[10.5px] font-medium text-emerald-300 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          title="Beginner Amateur Radio Guide & Checklist"
         >
           <BookOpen className="w-3 h-3" aria-hidden="true" />
           <span>Learn</span>
@@ -193,9 +238,21 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
 
         <button
           type="button"
+          onClick={onOpenAdmin}
+          data-testid="open-admin-panel-btn"
+          className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-rose-500/40 bg-rose-500/10 hover:bg-rose-500/20 text-[10.5px] font-medium text-rose-200 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          title="ZS1ROM Net Control Admin Panel"
+        >
+          <ShieldCheck className="w-3 h-3" aria-hidden="true" />
+          <span>Admin</span>
+        </button>
+
+        <button
+          type="button"
           onClick={onOpenSettings}
-          className="px-1.5 py-0.5 rounded border border-[#2a3f59] bg-[#121d2d] hover:border-sky-400/60 font-mono-tabular text-[11px] font-semibold text-slate-100 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-          title="Edit Station Callsign & QTH"
+          data-testid="header-callsign-btn"
+          className="px-1.5 py-0.5 rounded border border-[#2a3f59] bg-[#121d2d] hover:border-sky-400/60 font-mono-tabular text-[10.5px] font-semibold text-slate-100 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          title="Edit Station Callsign, QTH & 100W Output"
         >
           {callsign}
         </button>
@@ -203,7 +260,8 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
         <button
           type="button"
           onClick={onOpenSettings}
-          className="p-1 rounded border border-[#23344a] bg-[#0e1623] hover:border-sky-400/60 text-slate-300 hover:text-white transition-colors cursor-pointer"
+          data-testid="header-settings-btn"
+          className="p-1 rounded border border-[#23344a] bg-[#0e1623] hover:border-sky-400/60 text-slate-300 hover:text-white transition-colors shrink-0 cursor-pointer"
           aria-label="Open Station Settings"
         >
           <Settings className="w-3 h-3" />

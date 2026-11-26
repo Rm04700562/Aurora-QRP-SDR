@@ -3,18 +3,56 @@
 @layer base {
   :root {
     --font-display: 'Chakra Petch', sans-serif;
-    --font-sans: 'IBM Plex Sans', system-ui, sans-serif;
-    --font-mono: 'JetBrains Mono', monospace;
+    --font-sans: 'IBM Plex Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color-scheme: dark;
   }
 
-  html,
+  html {
+    min-height: 100%;
+    background-color: #06090f;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+    overscroll-behavior-y: contain;
+  }
+
   body,
   #root {
-    height: 100%;
+    min-height: 100%;
+    min-height: 100dvh;
     background-color: #06090f;
     color: #e2ecf7;
     font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  button,
+  [role="button"],
+  [role="slider"],
+  select,
+  input[type="range"] {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  button,
+  [role="button"],
+  select {
+    touch-action: manipulation;
+  }
+}
+
+.touch-hold-control {
+  touch-action: none;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+@media (max-width: 639px) {
+  input:not([type='range']):not([type='checkbox']):not([type='radio']),
+  textarea {
+    font-size: 16px;
   }
 }
 
@@ -55,7 +93,11 @@
   text-shadow: 0 0 18px rgba(31, 182, 255, 0.35);
 }
 
-/* Custom sleek dark scrollbar */
+/* Cross-browser sleek dark scrollbar (Firefox + Chromium/WebKit) */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #1f2f44 #070b11;
+}
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;

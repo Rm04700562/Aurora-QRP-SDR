@@ -102,7 +102,7 @@ export const QsoLogModal: React.FC<QsoLogModalProps> = ({
       aria-modal="true"
       aria-labelledby="qso-modal-title"
     >
-      <div className="sdr-panel rounded-lg max-w-4xl w-full max-h-[90vh] overflow-y-auto p-5 flex flex-col gap-4">
+      <div className="sdr-panel rounded-lg max-w-4xl w-full max-h-[90dvh] overflow-y-auto p-5 flex flex-col gap-4">
         <div className="flex items-center justify-between border-b border-[#1d2c3f] pb-3">
           <div className="flex items-center gap-2">
             <BookMarked className="w-5 h-5 text-sky-400" aria-hidden="true" />

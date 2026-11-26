@@ -7,7 +7,15 @@ import {
   describeBeamTarget,
   projectAzimuthalPoint,
 } from '../radio/azimuthalMap';
-import { angularDiffDeg, ANTENNAS, BANDS, evaluateBandCondition, getAntennaSpec, PROPAGATION_PRESETS } from '../radio/physics';
+import {
+  angularDiffDeg,
+  ANTENNAS,
+  BANDS,
+  evaluateBandCondition,
+  getAntennaSpec,
+  getEffectiveAntennaBandPerformance,
+  PROPAGATION_PRESETS,
+} from '../radio/physics';
 import { AntennaId, BandId, PropagationConditions, QthLocation, RemoteStation, SignalEvaluation } from '../types/radio';
 
 const PRESET_SHORT_LABELS: Record<string, string> = {
@@ -30,6 +38,7 @@ interface LeftControlColumnProps {
   onOpenPropagation: () => void;
   qth: QthLocation;
   stations: Array<{ station: RemoteStation; evalResult: SignalEvaluation }>;
+  currentSwr?: number;
   onLocateMe?: () => void;
   onOpenSettings?: () => void;
 }
@@ -47,13 +56,15 @@ export const LeftControlColumn: React.FC<LeftControlColumnProps> = ({
   onOpenPropagation,
   qth,
   stations,
+  currentSwr,
   onLocateMe,
   onOpenSettings,
 }) => {
   const ant = getAntennaSpec(antennaId);
+  const antPerf = getEffectiveAntennaBandPerformance(antennaId, activeBand);
   const isSlewing = Math.abs(rotorHeadingDeg - rotorTargetDeg) > 1;
   const isResonant = ant.resonantBands.includes(activeBand);
-  const bandCond = evaluateBandCondition(activeBand, propagation);
+  const bandCond = evaluateBandCondition(activeBand, propagation, qth);
 
   const mapContinentPaths = useMemo(
     () => buildAzimuthalContinentPaths(qth, 50, 50, 42),
@@ -82,7 +93,7 @@ export const LeftControlColumn: React.FC<LeftControlColumnProps> = ({
         .map(({ station, evalResult }) => {
           const isBeacon = Boolean(station.isBeacon);
           const sameBand = station.band === activeBand;
-          const beamHalf = ant.isDirectional ? Math.max(18, ant.beamwidthDeg / 2) : 180;
+          const beamHalf = ant.isDirectional ? Math.max(18, antPerf.beamwidthDeg / 2) : 180;
           const inBeam = angularDiffDeg(rotorHeadingDeg, evalResult.bearingToTxDeg) <= beamHalf;
           return {
             id: station.id,
@@ -97,10 +108,11 @@ export const LeftControlColumn: React.FC<LeftControlColumnProps> = ({
           };
         })
         .sort((a, b) => Number(!a.isBeacon) - Number(!b.isBeacon)),
-    [stations, activeBand, qth.lat, qth.lon, rotorHeadingDeg, ant.isDirectional, ant.beamwidthDeg]
+    [stations, activeBand, qth.lat, qth.lon, rotorHeadingDeg, ant.isDirectional, antPerf.beamwidthDeg]
   );
 
   const handleCompassClick = (e: React.MouseEvent<SVGSVGElement>) => {
+    if (!ant.isRotatable) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const cx = rect.left + rect.width / 2;
     const cy = rect.top + rect.height / 2;
@@ -111,7 +123,7 @@ export const LeftControlColumn: React.FC<LeftControlColumnProps> = ({
   };
 
   // Beamwidth wedge coordinates in SVG (center 50,50, radius 40)
-  const halfBeam = Math.min(170, ant.beamwidthDeg / 2);
+  const halfBeam = Math.min(170, antPerf.beamwidthDeg / 2);
   const toXY = (deg: number, r: number) => {
     const rad = ((deg - 90) * Math.PI) / 180;
     return { x: 50 + r * Math.cos(rad), y: 50 + r * Math.sin(rad) };
@@ -151,28 +163,50 @@ export const LeftControlColumn: React.FC<LeftControlColumnProps> = ({
           id="antenna-select"
           value={antennaId}
           onChange={(e) => onChangeAntenna(e.target.value as AntennaId)}
+          title={ant.description}
           className="w-full px-1.5 py-1 rounded border border-[#273a52] bg-[#0a111a] text-[11px] font-medium text-slate-100 focus:outline-none focus:border-sky-400 cursor-pointer"
         >
-          {ANTENNAS.map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.name}
-            </option>
-          ))}
+          <optgroup label="Multi-Band &amp; Portable">
+            {ANTENNAS.filter((a) => !a.id.startsWith('dx')).map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name} ({a.isRotatable ? 'Rot' : 'Fixed'})
+              </option>
+            ))}
+          </optgroup>
+          <optgroup label="Band-Specific Long-Range DX">
+            {ANTENNAS.filter((a) => a.id.startsWith('dx')).map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name} ({a.isRotatable ? 'Rot' : 'Fixed'})
+              </option>
+            ))}
+          </optgroup>
         </select>
 
-        <p className="mt-0.5 text-[10px] text-slate-400 leading-tight">
-          {ant.forwardGainDbi.toFixed(1)} dBi · {ant.isDirectional ? `${ant.beamwidthDeg}° beam` : '360° omni'}
+        <p className="mt-0.5 text-[10px] text-slate-400 leading-tight" data-testid="antenna-spec-summary">
+          {antPerf.forwardGainDbi.toFixed(1)} dBi · {ant.isDirectional ? (ant.isBidirectional ? 'Figure-8' : `${antPerf.beamwidthDeg}° beam`) : '360° omni'}
+          {!ant.isRotatable ? ' · Fixed' : ''}
+          {typeof currentSwr === 'number' ? ` · SWR ${currentSwr.toFixed(1)}` : ''}
         </p>
       </section>
 
       {/* ROTOR COMPASS */}
-      <section className="sdr-panel rounded-md p-1.5 flex flex-col gap-1">
+      <section className="sdr-panel rounded-md p-1.5 flex flex-col gap-1" data-testid="rotor-panel">
         <div className="flex items-center justify-between gap-1">
           <div className="flex items-center gap-1 text-[10px] font-display font-semibold tracking-wider uppercase text-slate-200">
-            <Compass className="w-3 h-3 text-sky-400" aria-hidden="true" />
+            <Compass className={`w-3 h-3 ${ant.isRotatable ? 'text-sky-400' : 'text-slate-500'}`} aria-hidden="true" />
             <span>Rotor</span>
-            {isSlewing && (
-              <span className="text-[8.5px] font-mono-tabular text-amber-300 lowercase">turning</span>
+            {!ant.isRotatable ? (
+              <span
+                data-testid="rotor-fixed-badge"
+                className="px-1 py-0 rounded bg-amber-500/15 border border-amber-400/40 text-[8px] font-mono-tabular text-amber-300 uppercase"
+                title="Rotator disabled for non-rotatable fixed wire/vertical antennas"
+              >
+                FIXED
+              </span>
+            ) : (
+              isSlewing && (
+                <span className="text-[8.5px] font-mono-tabular text-amber-300 lowercase">turning</span>
+              )
             )}
           </div>
           <div className="flex items-center gap-1">
@@ -205,22 +239,28 @@ export const LeftControlColumn: React.FC<LeftControlColumnProps> = ({
           <div className="flex items-center gap-0.5">
             <button
               type="button"
+              disabled={!ant.isRotatable}
+              data-testid="rotor-ccw-button"
               onClick={() => onSetRotorTarget((rotorTargetDeg - 15 + 360) % 360)}
-              className="p-0.5 rounded border border-[#24364d] bg-[#0c1420] hover:border-sky-400 text-sky-400 cursor-pointer"
+              className="p-0.5 rounded border border-[#24364d] bg-[#0c1420] hover:border-sky-400 text-sky-400 cursor-pointer disabled:opacity-35 disabled:cursor-not-allowed disabled:hover:border-[#24364d]"
               aria-label="Rotate antenna counter-clockwise 15 degrees"
             >
               <ChevronLeft className="w-3 h-3" />
             </button>
             <span
-              className="font-mono-tabular text-xs font-bold text-sky-400 w-[34px] text-center"
+              className={`font-mono-tabular text-xs font-bold w-[34px] text-center ${
+                ant.isRotatable ? 'text-sky-400' : 'text-slate-500'
+              }`}
               data-testid="rotor-heading-value"
             >
-              {rotorHeadingDeg}°
+              {ant.isRotatable ? `${rotorHeadingDeg}°` : 'FIX'}
             </span>
             <button
               type="button"
+              disabled={!ant.isRotatable}
+              data-testid="rotor-cw-button"
               onClick={() => onSetRotorTarget((rotorTargetDeg + 15) % 360)}
-              className="p-0.5 rounded border border-[#24364d] bg-[#0c1420] hover:border-sky-400 text-sky-400 cursor-pointer"
+              className="p-0.5 rounded border border-[#24364d] bg-[#0c1420] hover:border-sky-400 text-sky-400 cursor-pointer disabled:opacity-35 disabled:cursor-not-allowed disabled:hover:border-[#24364d]"
               aria-label="Rotate antenna clockwise 15 degrees"
             >
               <ChevronRight className="w-3 h-3" />
@@ -229,14 +269,20 @@ export const LeftControlColumn: React.FC<LeftControlColumnProps> = ({
 
           <div className="flex flex-col items-end min-w-0 leading-tight">
             <span className="text-[9px] text-slate-400 font-mono-tabular">
-              Tgt <span className="text-sky-300">{rotorTargetDeg}°</span>
+              {ant.isRotatable ? (
+                <>
+                  Tgt <span className="text-sky-300">{rotorTargetDeg}°</span>
+                </>
+              ) : (
+                <span className="text-amber-300">Rotor Off</span>
+              )}
             </span>
             <span
               className="text-[9px] text-emerald-300 font-mono-tabular truncate max-w-[92px]"
-              title={`Antenna beam pointing toward ${beamTargetLabel}`}
+              title={ant.isRotatable ? `Antenna beam pointing toward ${beamTargetLabel}` : 'Non-rotatable fixed antenna'}
               data-testid="rotor-beam-target"
             >
-              → {beamTargetLabel}
+              {ant.isRotatable ? `→ ${beamTargetLabel}` : 'Fixed Pattern'}
             </span>
           </div>
         </div>
@@ -245,9 +291,15 @@ export const LeftControlColumn: React.FC<LeftControlColumnProps> = ({
           <svg
             viewBox="0 0 100 100"
             onClick={handleCompassClick}
-            className="w-[136px] h-[136px] shrink-0 cursor-crosshair select-none"
+            className={`w-[112px] h-[112px] shrink-0 select-none ${
+              ant.isRotatable ? 'cursor-crosshair' : 'cursor-not-allowed opacity-80'
+            }`}
             role="img"
-            aria-label={`Antenna Rotor Globe Map centered at ${qth.grid} with beam at ${rotorHeadingDeg} degrees pointing toward ${beamTargetLabel}. Click to set target bearing.`}
+            aria-label={
+              ant.isRotatable
+                ? `Antenna Rotor Globe Map centered at ${qth.grid} with beam at ${rotorHeadingDeg} degrees pointing toward ${beamTargetLabel}. Click to set target bearing.`
+                : `Fixed non-rotatable antenna pattern centered at ${qth.grid}. Rotor disabled.`
+            }
           >
             <defs>
               <clipPath id="rotor-map-clip">
@@ -354,10 +406,11 @@ export const LeftControlColumn: React.FC<LeftControlColumnProps> = ({
                   <g
                     key={dot.id}
                     onClick={(e) => {
+                      if (!ant.isRotatable) return;
                       e.stopPropagation();
                       onSetRotorTarget(Math.round(dot.bearingDeg));
                     }}
-                    className="cursor-pointer"
+                    className={ant.isRotatable ? 'cursor-pointer' : 'cursor-not-allowed'}
                     data-testid={dot.isBeacon ? undefined : `rotor-user-dot-${dot.callsign}`}
                   >
                     <title>
@@ -434,13 +487,17 @@ export const LeftControlColumn: React.FC<LeftControlColumnProps> = ({
             <button
               key={preset.label}
               type="button"
+              disabled={!ant.isRotatable}
+              data-testid={`rotor-preset-${preset.label}`}
               onClick={() => onSetRotorTarget(preset.deg)}
-              className={`py-0.5 rounded text-[9px] font-mono-tabular border cursor-pointer transition-colors ${
-                rotorTargetDeg === preset.deg
-                  ? 'bg-sky-500/20 border-sky-400 text-sky-300'
-                  : 'bg-[#0a1019] border-[#1f3045] text-slate-400 hover:border-sky-400/50 hover:text-white'
+              className={`py-0.5 rounded text-[9px] font-mono-tabular border transition-colors disabled:opacity-35 disabled:cursor-not-allowed ${
+                !ant.isRotatable
+                  ? 'bg-[#0a1019] border-[#1f3045] text-slate-500'
+                  : rotorTargetDeg === preset.deg
+                  ? 'bg-sky-500/20 border-sky-400 text-sky-300 cursor-pointer'
+                  : 'bg-[#0a1019] border-[#1f3045] text-slate-400 hover:border-sky-400/50 hover:text-white cursor-pointer'
               }`}
-              title={`Point rotor ${preset.label} (${preset.deg}°)`}
+              title={ant.isRotatable ? `Point rotor ${preset.label} (${preset.deg}°)` : 'Rotator disabled for non-rotatable antenna'}
             >
               {preset.label}
             </button>

@@ -1,8 +1,11 @@
 import React, { useRef, useState } from 'react';
 import { formatFrequencyMhz } from '../radio/physics';
-import { RadioMode, TuneSpeed } from '../types/radio';
+import { RadioMode, StepSizeHz, TuneSpeed } from '../types/radio';
+import { computeWheelStepDirection } from '../utils/browserCompat';
 
-const MODES: RadioMode[] = ['LSB', 'USB', 'CW', 'AM', 'FM', 'RTTY', 'SSTV', 'DIGITAL'];
+const MODES: RadioMode[] = ['LSB', 'USB', 'CW', 'AM', 'FM', 'RTTY', 'SSTV', 'FT8', 'DIGITAL'];
+const STEP_OPTIONS: StepSizeHz[] = [1, 10, 100, 1000, 5000];
+const TUNE_SPEEDS: TuneSpeed[] = ['Fine', 'Fast', 'Memory'];
 
 interface VfoDeckProps {
   activeVfo: 'A' | 'B';
@@ -19,8 +22,10 @@ interface VfoDeckProps {
   onChangeRit: (hz: number) => void;
   onChangeXit: (hz: number) => void;
   onChangeClarifier: (hz: number) => void;
-  stepHz: number;
+  stepHz: StepSizeHz;
+  onChangeStepHz: (hz: StepSizeHz) => void;
   tuneSpeed: TuneSpeed;
+  onChangeTuneSpeed: (speed: TuneSpeed) => void;
   isPoweredOn?: boolean;
 }
 
@@ -40,7 +45,9 @@ export const VfoDeck: React.FC<VfoDeckProps> = ({
   onChangeXit,
   onChangeClarifier,
   stepHz,
+  onChangeStepHz,
   tuneSpeed,
+  onChangeTuneSpeed,
   isPoweredOn = true,
 }) => {
   const [dialAngle, setDialAngle] = useState(0);
@@ -53,7 +60,8 @@ export const VfoDeck: React.FC<VfoDeckProps> = ({
 
   const handleWheel = (e: React.WheelEvent) => {
     e.preventDefault();
-    const dir = e.deltaY < 0 ? 1 : -1;
+    const dir = computeWheelStepDirection(e.deltaY, e.deltaMode);
+    if (dir === 0) return;
     setDialAngle((prev) => (prev + dir * 18) % 360);
     onTuneDelta(dir * stepHz * speedMultiplier);
   };
@@ -91,11 +99,11 @@ export const VfoDeck: React.FC<VfoDeckProps> = ({
   };
 
   return (
-    <section className="sdr-panel rounded-md px-2.5 py-1.5 flex flex-col gap-1.5">
+    <section className="sdr-panel rounded-md px-2.5 py-1 flex flex-col gap-1">
       {/* VFO A / B & Main Frequency Row */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         {/* Left: RX / TX status + Quick Mode dropdown */}
-        <div className="flex flex-col gap-1.5 shrink-0">
+        <div className="flex flex-col gap-1 shrink-0">
           <div className="flex items-center gap-1">
             <span
               className={`px-2.5 py-0.5 rounded text-[11px] font-display font-bold tracking-wider uppercase border ${
@@ -170,51 +178,81 @@ export const VfoDeck: React.FC<VfoDeckProps> = ({
               </button>
             </div>
 
-            <div
-              onWheel={handleWheel}
-              className={`font-mono-tabular text-xl sm:text-[24px] font-bold tracking-tight leading-none select-none cursor-ns-resize flex items-baseline ${
-                isPoweredOn ? 'text-sky-400 cyan-readout-glow' : 'text-slate-600'
-              }`}
-              title="Scroll mouse wheel or click digit groups to tune"
-              data-testid="vfo-frequency-readout"
-            >
+            <div className="flex items-center gap-1.5">
               <button
                 type="button"
-                onClick={() => onTuneDelta(100_000)}
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  onTuneDelta(-100_000);
+                data-testid="vfo-step-down-btn"
+                onClick={() => {
+                  setDialAngle((prev) => (prev - 18) % 360);
+                  onTuneDelta(-stepHz * speedMultiplier);
                 }}
-                className="hover:text-sky-200 transition-colors cursor-pointer"
-                title="Click +100 kHz / Right-click -100 kHz"
+                aria-label="Tune Frequency Down"
+                title={`Tune down ${stepHz * speedMultiplier} Hz`}
+                className="w-6 h-6 rounded border border-[#23344a] bg-[#0c1420] hover:border-sky-400/60 hover:text-white text-slate-300 font-mono-tabular text-sm leading-none flex items-center justify-center cursor-pointer shrink-0"
               >
-                {mhzPart}
+                −
               </button>
-              <span className="text-sky-500/80">.</span>
+
+              <div
+                onWheel={handleWheel}
+                className={`font-mono-tabular text-xl sm:text-[24px] font-bold tracking-tight leading-none select-none cursor-ns-resize flex items-baseline ${
+                  isPoweredOn ? 'text-sky-400 cyan-readout-glow' : 'text-slate-600'
+                }`}
+                title="Scroll mouse wheel, tap −/+ buttons, or click digit groups to tune"
+                data-testid="vfo-frequency-readout"
+              >
+                <button
+                  type="button"
+                  onClick={() => onTuneDelta(100_000)}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    onTuneDelta(-100_000);
+                  }}
+                  className="hover:text-sky-200 transition-colors cursor-pointer"
+                  title="Click +100 kHz / Right-click -100 kHz"
+                >
+                  {mhzPart}
+                </button>
+                <span className="text-sky-500/80">.</span>
+                <button
+                  type="button"
+                  onClick={() => onTuneDelta(1_000)}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    onTuneDelta(-1_000);
+                  }}
+                  className="hover:text-sky-200 transition-colors cursor-pointer"
+                  title="Click +1 kHz / Right-click -1 kHz"
+                >
+                  {khzPart}
+                </button>
+                <span className="text-sky-500/80">.</span>
+                <button
+                  type="button"
+                  onClick={() => onTuneDelta(stepHz)}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    onTuneDelta(-stepHz);
+                  }}
+                  className="text-sky-300 hover:text-white transition-colors cursor-pointer"
+                  title={`Click +${stepHz} Hz / Right-click -${stepHz} Hz`}
+                >
+                  {hzPart}
+                </button>
+              </div>
+
               <button
                 type="button"
-                onClick={() => onTuneDelta(1_000)}
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  onTuneDelta(-1_000);
+                data-testid="vfo-step-up-btn"
+                onClick={() => {
+                  setDialAngle((prev) => (prev + 18) % 360);
+                  onTuneDelta(stepHz * speedMultiplier);
                 }}
-                className="hover:text-sky-200 transition-colors cursor-pointer"
-                title="Click +1 kHz / Right-click -1 kHz"
+                aria-label="Tune Frequency Up"
+                title={`Tune up ${stepHz * speedMultiplier} Hz`}
+                className="w-6 h-6 rounded border border-[#23344a] bg-[#0c1420] hover:border-sky-400/60 hover:text-white text-slate-300 font-mono-tabular text-sm leading-none flex items-center justify-center cursor-pointer shrink-0"
               >
-                {khzPart}
-              </button>
-              <span className="text-sky-500/80">.</span>
-              <button
-                type="button"
-                onClick={() => onTuneDelta(stepHz)}
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  onTuneDelta(-stepHz);
-                }}
-                className="text-sky-300 hover:text-white transition-colors cursor-pointer"
-                title={`Click +${stepHz} Hz / Right-click -${stepHz} Hz`}
-              >
-                {hzPart}
+                +
               </button>
             </div>
           </div>
@@ -230,6 +268,8 @@ export const VfoDeck: React.FC<VfoDeckProps> = ({
             onPointerDown={handleDialDown}
             onPointerMove={handleDialMove}
             onPointerUp={handleDialUp}
+            onPointerCancel={handleDialUp}
+            onLostPointerCapture={handleDialUp}
             onWheel={handleWheel}
             onKeyDown={(e) => {
               if (e.key === 'ArrowRight' || e.key === 'ArrowUp') {
@@ -242,11 +282,11 @@ export const VfoDeck: React.FC<VfoDeckProps> = ({
                 onTuneDelta(-stepHz * speedMultiplier);
               }
             }}
-            className="w-[46px] h-[46px] rounded-full border-2 border-[#394f69] bg-gradient-to-br from-[#2e3e52] via-[#131c28] to-[#0a0f17] shadow-[0_0_12px_rgba(34,184,255,0.22),inset_0_2px_4px_rgba(255,255,255,0.12)] flex items-center justify-center relative cursor-grab active:cursor-grabbing select-none shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+            className="touch-hold-control w-[40px] h-[40px] rounded-full border-2 border-[#394f69] bg-gradient-to-br from-[#2e3e52] via-[#131c28] to-[#0a0f17] shadow-[0_0_12px_rgba(34,184,255,0.22),inset_0_2px_4px_rgba(255,255,255,0.12)] flex items-center justify-center relative cursor-grab active:cursor-grabbing select-none shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
             title="Spin or scroll wheel to tune VFO frequency"
           >
             <div
-              className="w-[34px] h-[34px] rounded-full border border-[#1d2c3f] bg-gradient-to-b from-[#1e2a39] to-[#0d141e] relative"
+              className="w-[30px] h-[30px] rounded-full border border-[#1d2c3f] bg-gradient-to-b from-[#1e2a39] to-[#0d141e] relative"
               style={{ transform: `rotate(${dialAngle}deg)` }}
             >
               <div className="w-1.5 h-1.5 rounded-full bg-[#090e16] border border-sky-400/80 absolute top-1 left-1/2 -translate-x-1/2" />
@@ -307,7 +347,7 @@ export const VfoDeck: React.FC<VfoDeckProps> = ({
       </div>
 
       {/* Mode Selector Bar */}
-      <div className="grid grid-cols-4 sm:grid-cols-8 gap-1 pt-0.5">
+      <div className="grid grid-cols-5 sm:grid-cols-9 gap-1">
         {MODES.map((m) => {
           const active = mode === m;
           return (
@@ -315,7 +355,7 @@ export const VfoDeck: React.FC<VfoDeckProps> = ({
               key={m}
               type="button"
               onClick={() => onSelectMode(m)}
-              className={`py-1 rounded text-[11px] font-display font-semibold tracking-wider transition-colors cursor-pointer whitespace-nowrap ${
+              className={`py-0.5 rounded text-[10.5px] font-display font-semibold tracking-wider transition-colors cursor-pointer whitespace-nowrap ${
                 active
                   ? 'bg-sky-500 text-slate-950 shadow-[0_0_10px_rgba(34,184,255,0.4)]'
                   : 'bg-[#0a111b] border border-[#1f3045] text-slate-300 hover:border-sky-400/50 hover:text-white'
@@ -326,6 +366,67 @@ export const VfoDeck: React.FC<VfoDeckProps> = ({
             </button>
           );
         })}
+      </div>
+
+      {/* VFO Tuning Steps & Dial Speed */}
+      <div
+        data-testid="vfo-tuning-steps"
+        className="flex flex-wrap items-center justify-between gap-2 pt-0.5 border-t border-[#182638]"
+      >
+        <div className="flex items-center gap-1" role="group" aria-label="Tuning Step">
+          <span className="text-[10px] font-display font-semibold uppercase tracking-wider text-slate-400 mr-0.5">
+            Step
+          </span>
+          {STEP_OPTIONS.map((hz) => {
+            const active = stepHz === hz;
+            const label = hz >= 1000 ? `${hz / 1000}k` : `${hz}Hz`;
+            const fullLabel = hz >= 1000 ? `${hz / 1000} kHz` : `${hz} Hz`;
+            return (
+              <button
+                key={hz}
+                type="button"
+                onClick={() => onChangeStepHz(hz)}
+                aria-pressed={active}
+                aria-label={`Step ${fullLabel}`}
+                title={`Set VFO tuning step to ${fullLabel}`}
+                className={`px-1.5 py-0.5 rounded text-[10px] font-mono-tabular border transition-colors cursor-pointer ${
+                  active
+                    ? 'bg-sky-500 border-sky-400 text-slate-950 font-bold'
+                    : 'bg-[#0a1019] border-[#1f3045] text-slate-300 hover:border-sky-400/50 hover:text-white'
+                }`}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="flex items-center gap-1" role="group" aria-label="Tune Speed">
+          <span className="text-[10px] font-display font-semibold uppercase tracking-wider text-slate-400 mr-0.5">
+            Tune
+          </span>
+          {TUNE_SPEEDS.map((speed) => {
+            const active = tuneSpeed === speed;
+            const shortLabel = speed === 'Memory' ? 'Mem' : speed;
+            return (
+              <button
+                key={speed}
+                type="button"
+                onClick={() => onChangeTuneSpeed(speed)}
+                aria-pressed={active}
+                aria-label={`Tune ${speed}`}
+                title={`${speed} VFO dial speed`}
+                className={`px-1.5 py-0.5 rounded text-[10px] font-display uppercase tracking-wide border transition-colors cursor-pointer ${
+                  active
+                    ? 'bg-sky-500 border-sky-400 text-slate-950 font-bold'
+                    : 'bg-[#0a1019] border-[#1f3045] text-slate-300 hover:border-sky-400/50 hover:text-white'
+                }`}
+              >
+                {shortLabel}
+              </button>
+            );
+          })}
+        </div>
       </div>
     </section>
   );

@@ -13,6 +13,7 @@ interface WorldMapPanelProps {
   onOpenPropagation: () => void;
   onSelectBand?: (band: BandId) => void;
   onSetRotorTarget?: (deg: number) => void;
+  isRotatable?: boolean;
   onLocateMe?: () => void;
   onOpenSettings?: () => void;
 }
@@ -83,17 +84,18 @@ export const WorldMapPanel: React.FC<WorldMapPanelProps> = ({
   onOpenPropagation,
   onSelectBand,
   onSetRotorTarget,
+  isRotatable = true,
   onLocateMe,
   onOpenSettings,
 }) => {
   const qthPt = projectLonLat(qth.lon, qth.lat);
   const beamPaths = buildWorldMapBeamPaths(qth, rotorHeadingDeg, 105);
 
-  const bandCond = evaluateBandCondition(band, propagation);
+  const bandCond = evaluateBandCondition(band, propagation, qth);
   const activeBadge = ratingStyles(bandCond.rating);
 
-  // Solar terminator subsolar longitude based on UTC hour
-  const sunLon = ((12 - propagation.utcHour) * 15 + 360) % 360;
+  // Solar terminator night shadow longitude based on UTC hour
+  const sunLon = ((((12 - propagation.utcHour) * 15) % 360) + 360) % 360;
   const nightStartX = (sunLon + 90) % 360;
 
   // Show every connected operator (any band) plus active-band beacons (live users rendered on top)
@@ -102,7 +104,7 @@ export const WorldMapPanel: React.FC<WorldMapPanelProps> = ({
     .sort((a, b) => Number(!a.station.isBeacon) - Number(!b.station.isBeacon));
 
   const handleMapClick = (e: React.MouseEvent<SVGSVGElement>) => {
-    if (!onSetRotorTarget) return;
+    if (!isRotatable || !onSetRotorTarget) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const relX = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     const relY = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
@@ -117,8 +119,12 @@ export const WorldMapPanel: React.FC<WorldMapPanelProps> = ({
         <svg
           viewBox="0 0 360 180"
           onClick={handleMapClick}
-          className="w-full h-[58px] block cursor-crosshair"
-          aria-label="QTH World Map and Beam Heading. Click anywhere or on a station to aim rotator."
+          className={`w-full h-[48px] block ${isRotatable ? 'cursor-crosshair' : 'cursor-default'}`}
+          aria-label={
+            isRotatable
+              ? 'QTH World Map and Beam Heading. Click anywhere or on a station to aim rotator.'
+              : 'QTH World Map and Station Coverage (Fixed non-rotatable antenna).'
+          }
         >
           {/* Ocean grid */}
           <line x1="0" y1="90" x2="360" y2="90" stroke="#152538" strokeWidth="0.7" strokeDasharray="3 3" />
@@ -194,15 +200,15 @@ export const WorldMapPanel: React.FC<WorldMapPanelProps> = ({
               <g
                 key={station.id}
                 onClick={(e) => {
-                  if (!onSetRotorTarget) return;
+                  if (!isRotatable || !onSetRotorTarget) return;
                   e.stopPropagation();
                   onSetRotorTarget(evalResult.bearingToTxDeg);
                 }}
-                className="cursor-pointer"
+                className={isRotatable ? 'cursor-pointer' : 'cursor-default'}
                 data-testid={isPeer ? `world-user-dot-${station.callsign}` : undefined}
               >
                 <title>
-                  {`${station.callsign} (${station.band} · ${evalResult.distanceKm} km · ${evalResult.bearingToTxDeg}°) — Click to aim rotator`}
+                  {`${station.callsign} (${station.band} · ${evalResult.distanceKm} km · ${evalResult.bearingToTxDeg}°)${isRotatable ? ' — Click to aim rotator' : ''}`}
                 </title>
                 <circle cx={pt.x} cy={pt.y} r="7" fill="transparent" />
                 {isPeer && (
@@ -240,7 +246,7 @@ export const WorldMapPanel: React.FC<WorldMapPanelProps> = ({
         aria-label="Band Propagation Conditions"
       >
         {BANDS.map((b) => {
-          const cond = evaluateBandCondition(b.id, propagation);
+          const cond = evaluateBandCondition(b.id, propagation, qth);
           const style = ratingStyles(cond.rating);
           const isCurrent = b.id === band;
           return (

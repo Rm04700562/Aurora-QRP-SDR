@@ -14,20 +14,24 @@ const QTH_PRESETS: Array<{ label: string; qth: QthLocation }> = [
 interface StationSettingsModalProps {
   open: boolean;
   callsign: string;
+  isCallsignPermanent?: boolean;
   qth: QthLocation;
   txPowerW: number;
   compressionPct: number;
   onSave: (next: { callsign: string; qth: QthLocation; txPowerW: number; compressionPct: number }) => void;
+  onOpenCallsignRegistry?: () => void;
   onClose: () => void;
 }
 
 export const StationSettingsModal: React.FC<StationSettingsModalProps> = ({
   open,
   callsign,
+  isCallsignPermanent = false,
   qth,
   txPowerW,
   compressionPct,
   onSave,
+  onOpenCallsignRegistry,
   onClose,
 }) => {
   const [draftCall, setDraftCall] = useState(callsign);
@@ -100,12 +104,12 @@ export const StationSettingsModal: React.FC<StationSettingsModalProps> = ({
       aria-modal="true"
       aria-labelledby="settings-modal-title"
     >
-      <form onSubmit={handleSave} className="sdr-panel rounded-lg max-w-lg w-full p-5 flex flex-col gap-4">
+      <form onSubmit={handleSave} className="sdr-panel rounded-lg max-w-lg w-full max-h-[90dvh] overflow-y-auto p-5 flex flex-col gap-4">
         <div className="flex items-center justify-between border-b border-[#1d2c3f] pb-3">
           <div className="flex items-center gap-2">
             <Settings className="w-5 h-5 text-sky-400" aria-hidden="true" />
             <h2 id="settings-modal-title" className="font-display text-lg font-bold text-white">
-              Station Identity & QRP Settings
+              Station Identity &amp; Rig Settings
             </h2>
           </div>
           <button
@@ -119,15 +123,43 @@ export const StationSettingsModal: React.FC<StationSettingsModalProps> = ({
         </div>
 
         <div>
-          <label htmlFor="station-callsign-input" className="block text-xs text-slate-300 mb-1">
-            Amateur Radio Callsign (or Practice Handle)
-          </label>
+          <div className="flex items-center justify-between mb-1">
+            <div className="flex items-center gap-2">
+              <label htmlFor="station-callsign-input" className="block text-xs text-slate-300">
+                Amateur Radio Callsign (or HR Callsign)
+              </label>
+              {isCallsignPermanent && (
+                <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-400/45 text-[10px] font-mono-tabular text-emerald-300">
+                  Permanently Assigned
+                </span>
+              )}
+            </div>
+            {onOpenCallsignRegistry && (
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onOpenCallsignRegistry();
+                }}
+                className="text-[11px] text-amber-300 hover:underline cursor-pointer"
+              >
+                Get HR / Register Call →
+              </button>
+            )}
+          </div>
           <input
             id="station-callsign-input"
             type="text"
-            value={draftCall}
-            onChange={(e) => setDraftCall(e.target.value)}
-            className="w-full px-3 py-2 rounded border border-[#24364d] bg-[#080d14] font-mono-tabular text-sm text-sky-300 uppercase focus:outline-none focus:border-sky-400"
+            readOnly={isCallsignPermanent}
+            value={isCallsignPermanent ? callsign : draftCall}
+            onChange={(e) => {
+              if (!isCallsignPermanent) setDraftCall(e.target.value);
+            }}
+            className={`w-full px-3 py-2 rounded border font-mono-tabular text-sm uppercase focus:outline-none ${
+              isCallsignPermanent
+                ? 'border-emerald-500/45 bg-[#061013] text-emerald-300 cursor-not-allowed'
+                : 'border-[#24364d] bg-[#080d14] text-sky-300 focus:border-sky-400'
+            }`}
           />
         </div>
 
@@ -217,16 +249,16 @@ export const StationSettingsModal: React.FC<StationSettingsModalProps> = ({
           <div>
             <div className="flex justify-between text-xs mb-1">
               <label htmlFor="tx-power-slider" className="text-slate-300">
-                QRP TX Power
+                RF TX Power (max 100W)
               </label>
               <span className="font-mono-tabular text-sky-400">{draftPower.toFixed(1)} W</span>
             </div>
             <input
               id="tx-power-slider"
               type="range"
-              min={0.5}
-              max={5.0}
-              step={0.5}
+              min={1}
+              max={100}
+              step={1}
               value={draftPower}
               onChange={(e) => setDraftPower(Number(e.target.value))}
               className="w-full accent-sky-400 cursor-pointer"

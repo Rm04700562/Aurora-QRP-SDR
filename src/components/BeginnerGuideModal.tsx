@@ -55,7 +55,7 @@ export const BeginnerGuideModal: React.FC<BeginnerGuideModalProps> = ({
       aria-modal="true"
       aria-labelledby="guide-modal-title"
     >
-      <div className="sdr-panel rounded-lg max-w-3xl w-full max-h-[90vh] overflow-y-auto p-5 flex flex-col gap-4">
+      <div className="sdr-panel rounded-lg max-w-3xl w-full max-h-[90dvh] overflow-y-auto p-5 flex flex-col gap-4">
         <div className="flex items-center justify-between border-b border-[#1d2c3f] pb-3">
           <div className="flex items-center gap-2">
             <BookOpen className="w-5 h-5 text-emerald-400" aria-hidden="true" />
@@ -126,7 +126,7 @@ export const BeginnerGuideModal: React.FC<BeginnerGuideModalProps> = ({
               <li><strong>S-Meter (S1–S9+60):</strong> Received signal strength. S9 is strong; S3 is weak.</li>
               <li><strong>SWR (Standing Wave Ratio):</strong> Antenna match. Aim for &lt; 1.5; click <strong>TUNE</strong> to match!</li>
               <li><strong>Filter Width:</strong> Narrows receiver passband (2.4 kHz for voice, 0.5 kHz for Morse CW).</li>
-              <li><strong>QRP (5W):</strong> Low-power operating — proving global reach takes skill, not brute watts.</li>
+              <li><strong>RF Output (up to 100W):</strong> Adjustable from 1W QRP to 100W via the Power selector knob (15W default on startup); click <strong>HR / Call</strong> to get your country HR call sign or register a licensed call.</li>
             </ul>
           </div>
 

@@ -18,11 +18,32 @@ export type RadioMode =
   | 'FM'
   | 'RTTY'
   | 'SSTV'
+  | 'FT8'
   | 'DIGITAL';
+
+export type WorkspaceModuleTab =
+  | 'waterfall'
+  | 'cw'
+  | 'rtty'
+  | 'sstv'
+  | 'ft8'
+  | 'cluster'
+  | 'propmap';
 
 export type AntennaId =
   | 'yagi5'
+  | 'quad5'
   | 'steppir3'
+  | 'dx10m'
+  | 'dx12m'
+  | 'dx15m'
+  | 'dx17m'
+  | 'dx20m'
+  | 'dx30m'
+  | 'dx40m'
+  | 'dx60m'
+  | 'dx80m'
+  | 'dx160m'
   | 'dipole'
   | 'vertical'
   | 'efhw'
@@ -46,12 +67,15 @@ export interface AntennaSpec {
   name: string;
   shortName: string;
   isDirectional: boolean;
+  isRotatable: boolean;
   isBidirectional?: boolean;
   forwardGainDbi: number;
   frontToBackDb: number;
   beamwidthDeg: number;
   resonantBands: BandId[];
   noiseRejectionDb: number;
+  bandwidthPct: number; // Fractional 2:1 SWR bandwidth around band center
+  takeoffProfile: 'low-angle' | 'balanced' | 'high-angle';
   description: string;
 }
 
@@ -64,6 +88,10 @@ export interface PropagationConditions {
   greylineBoost: boolean;
   utcHour: number; // 0 - 23.99
   presetName: string;
+  lastUpdatedUtc?: string;
+  nextUpdateUtc?: string;
+  sourceLabel?: string;
+  timestampMs?: number;
 }
 
 export interface QthLocation {
@@ -88,6 +116,8 @@ export interface RemoteStation {
   cwText?: string;
   isBeacon?: boolean;
   lastActiveAt: number;
+  countryCode?: string;
+  operatorType?: 'HAM' | 'HR';
 }
 
 export interface SignalEvaluation {
@@ -105,6 +135,12 @@ export interface SignalEvaluation {
   auroraFlutter: number; // 0..1
   inPassband: boolean;
   freqOffsetHz: number;
+  propagationOpen: boolean;
+  propagationReason: string;
+  reliabilityPct: number;
+  mufMhz: number;
+  fotMhz: number;
+  lufMhz: number;
 }
 
 export interface QsoEntry {
@@ -130,4 +166,86 @@ export interface ServerOption {
 export interface GroupOption {
   id: string;
   label: string;
+}
+
+export interface CallsignRecord {
+  id: string;
+  callsign: string;
+  type: 'HR' | 'HAM';
+  countryCode: string;
+  countryName: string;
+  divisionPrefix?: string;
+  operatorName: string;
+  grid: string;
+  createdAt: string;
+}
+
+export interface DxClusterSpot {
+  id: string;
+  spotter: string;
+  dxCall: string;
+  band: BandId;
+  frequencyHz: number;
+  mode: RadioMode;
+  comment: string;
+  grid: string;
+  serverId: string;
+  groupId: string;
+  timestampUtc: string;
+  createdAt: number;
+}
+
+export interface RttyConfig {
+  baudRate: 45.45 | 50 | 75;
+  shiftHz: 170 | 425 | 850;
+  markHz: 1275 | 2125;
+  fineOffsetHz: number;
+  reversePolarity: boolean;
+  uos: boolean;
+}
+
+export type SstvModeId = 'Robot 36' | 'Martin M1' | 'Scottie S1' | 'PD 50';
+
+export interface DigitalFeedLine {
+  id: string;
+  timestampUtc: string;
+  direction: 'RX' | 'TX' | 'SYS';
+  mode: 'CW' | 'RTTY' | 'FT8' | 'DIGITAL';
+  callsign: string;
+  frequencyHz: number;
+  snrDb?: number;
+  text: string;
+}
+
+export interface SstvFramePayload {
+  id: string;
+  callsign: string;
+  sstvMode: SstvModeId;
+  width: number;
+  height: number;
+  pixelsBase64: string; // RGB packed 3 bytes per pixel
+  caption: string;
+  timestampUtc: string;
+  snrDb?: number;
+}
+
+export interface Ft8DecodedLine {
+  id: string;
+  utcTime: string;
+  snrDb: number;
+  dtSec: number;
+  audioFreqHz: number;
+  rfFreqHz: number;
+  band: BandId;
+  callsign: string;
+  message: string;
+  isCq: boolean;
+  direction: 'RX' | 'TX';
+}
+
+export interface AdminNotice {
+  id: string;
+  fromAdmin: string;
+  message: string;
+  timestampUtc: string;
 }

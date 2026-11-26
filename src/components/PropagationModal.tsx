@@ -1,21 +1,46 @@
-import React from 'react';
-import { Sparkles, SunMedium, X } from 'lucide-react';
-import { BANDS, evaluateBandCondition, PROPAGATION_PRESETS } from '../radio/physics';
-import { PropagationConditions } from '../types/radio';
+import React, { useMemo } from 'react';
+import { Globe2, RefreshCw, Sparkles, SunMedium, X } from 'lucide-react';
+import {
+  BANDS,
+  evaluateAllWorldRegions,
+  evaluateBandCondition,
+  PROPAGATION_PRESETS,
+  PropagationRating,
+} from '../radio/physics';
+import { PropagationConditions, QthLocation } from '../types/radio';
 
 interface PropagationModalProps {
   open: boolean;
   conditions: PropagationConditions;
+  qth?: QthLocation;
   onChange: (next: PropagationConditions) => void;
+  onRefreshHourly?: () => void;
+  isRefreshingHourly?: boolean;
   onClose: () => void;
 }
+
+const CELL_STYLES: Record<PropagationRating, { badge: string; short: string }> = {
+  Excellent: { badge: 'text-emerald-300 border-emerald-500/40 bg-emerald-500/15', short: 'EXC' },
+  Good: { badge: 'text-sky-300 border-sky-500/40 bg-sky-500/15', short: 'GOOD' },
+  Fair: { badge: 'text-amber-300 border-amber-500/40 bg-amber-500/15', short: 'FAIR' },
+  Poor: { badge: 'text-rose-300 border-rose-500/40 bg-rose-500/15', short: 'POOR' },
+  Aurora: { badge: 'text-purple-300 border-purple-500/40 bg-purple-500/15', short: 'AUR' },
+};
 
 export const PropagationModal: React.FC<PropagationModalProps> = ({
   open,
   conditions,
+  qth,
   onChange,
+  onRefreshHourly,
+  isRefreshingHourly = false,
   onClose,
 }) => {
+  const worldRegions = useMemo(
+    () => (open ? evaluateAllWorldRegions(conditions) : []),
+    [open, conditions]
+  );
+
   if (!open) return null;
 
   const updateField = <K extends keyof PropagationConditions>(key: K, val: PropagationConditions[K]) => {
@@ -33,27 +58,43 @@ export const PropagationModal: React.FC<PropagationModalProps> = ({
       aria-modal="true"
       aria-labelledby="prop-modal-title"
     >
-      <div className="sdr-panel rounded-lg max-w-3xl w-full max-h-[90vh] overflow-y-auto p-5 flex flex-col gap-4">
-        <div className="flex items-center justify-between border-b border-[#1d2c3f] pb-3">
+      <div className="sdr-panel rounded-lg max-w-4xl w-full max-h-[92dvh] overflow-y-auto p-4 flex flex-col gap-3">
+        <div className="flex items-center justify-between gap-3 border-b border-[#1d2c3f] pb-2.5">
           <div className="flex items-center gap-2">
-            <SunMedium className="w-5 h-5 text-sky-400" aria-hidden="true" />
+            <SunMedium className="w-5 h-5 text-sky-400 shrink-0" aria-hidden="true" />
             <div>
               <h2 id="prop-modal-title" className="font-display text-lg font-bold text-white">
-                Virtual Ionospheric Propagation Studio
+                Global Ionospheric Propagation Studio
               </h2>
               <p className="text-xs text-slate-400">
-                Simulate solar flux, geomagnetic storms, and day/night MUF openings across all HF bands.
+                Auto-updates all world regions hourly at :00 UTC ({conditions.sourceLabel ?? 'Hourly Feed'}
+                {conditions.lastUpdatedUtc ? ` · Updated ${conditions.lastUpdatedUtc}` : ''}
+                {conditions.nextUpdateUtc ? ` · Next ${conditions.nextUpdateUtc}` : ''})
               </p>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="p-1.5 rounded border border-[#24364d] text-slate-300 hover:text-white cursor-pointer"
-            aria-label="Close Propagation Studio"
-          >
-            <X className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            {onRefreshHourly && (
+              <button
+                type="button"
+                onClick={onRefreshHourly}
+                disabled={isRefreshingHourly}
+                data-testid="modal-refresh-hourly-btn"
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded border border-sky-400/50 bg-sky-500/15 hover:bg-sky-500/25 text-xs font-medium text-sky-200 cursor-pointer disabled:opacity-50"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingHourly ? 'animate-spin' : ''}`} aria-hidden="true" />
+                <span>{isRefreshingHourly ? 'Syncing...' : 'Sync Hourly Global'}</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onClose}
+              className="p-1.5 rounded border border-[#24364d] text-slate-300 hover:text-white cursor-pointer"
+              aria-label="Close Propagation Studio"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         </div>
 
         {/* Presets */}
@@ -67,6 +108,7 @@ export const PropagationModal: React.FC<PropagationModalProps> = ({
                 onChange({
                   ...preset.conditions,
                   utcHour: conditions.utcHour,
+                  timestampMs: conditions.timestampMs,
                 })
               }
               className={`px-3 py-1.5 rounded text-xs font-medium border cursor-pointer transition-colors ${
@@ -153,7 +195,7 @@ export const PropagationModal: React.FC<PropagationModalProps> = ({
                 className="w-full accent-sky-400 cursor-pointer"
               />
               <p className="text-[11px] text-slate-400 mt-0.5">
-                Daytime boosts higher bands (20m–10m) while nighttime eliminates D-layer absorption on 40m/80m/160m.
+                Rotates the sunlit F2 belt and day/night greyline terminator across all continents around the Earth.
               </p>
             </div>
           </div>
@@ -200,7 +242,7 @@ export const PropagationModal: React.FC<PropagationModalProps> = ({
                 <div>
                   <div className="text-xs font-medium text-slate-100">Greyline Dawn/Dusk Ducting</div>
                   <div className="text-[11px] text-slate-400">
-                    Reduces long-path attenuation along the day/night terminator for 5W QRP DX contacts.
+                    Reduces long-path attenuation along the day/night terminator for 100W SDR DX contacts.
                   </div>
                 </div>
               </label>
@@ -209,38 +251,84 @@ export const PropagationModal: React.FC<PropagationModalProps> = ({
             <div className="rounded bg-[#0c1624] border border-[#22354c] p-2.5 text-xs text-slate-300 flex items-start gap-2">
               <Sparkles className="w-4 h-4 text-sky-400 shrink-0 mt-0.5" aria-hidden="true" />
               <span>
-                Changes propagate live across connected operators in the VOIP mesh and immediately update S-meters and waterfall signals.
+                Global hourly updates automatically broadcast across all connected stations and recalculate worldwide path loss and S-meters.
               </span>
             </div>
           </div>
         </div>
 
-        {/* Band-by-Band Matrix */}
+        {/* Whole-World Regional HF Matrix */}
         <div>
-          <h3 className="text-xs font-display font-semibold uppercase tracking-wider text-slate-300 mb-2">
-            Live HF Band Forecast
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="flex items-center gap-1.5 text-xs font-display font-semibold uppercase tracking-wider text-slate-200">
+              <Globe2 className="w-3.5 h-3.5 text-sky-400" aria-hidden="true" />
+              <span>Worldwide Hourly HF Propagation Matrix</span>
+            </h3>
+            <span className="text-[11px] font-mono-tabular text-slate-400">
+              {String(Math.floor(conditions.utcHour)).padStart(2, '0')}:00 UTC Solar Snapshot
+            </span>
+          </div>
+          <div className="overflow-x-auto rounded border border-[#1d2c3f] bg-[#070d16]">
+            <table className="w-full text-[10.5px] font-mono-tabular border-collapse" data-testid="world-propagation-matrix">
+              <thead>
+                <tr className="border-b border-[#1d2c3f] text-slate-400 bg-[#0b1320]">
+                  <th className="text-left px-2 py-1.5 font-display">Region</th>
+                  <th className="text-center px-1.5 py-1.5">Solar</th>
+                  <th className="text-center px-1.5 py-1.5">MUF</th>
+                  {BANDS.map((b) => (
+                    <th key={b.id} className="text-center px-1 py-1.5">
+                      {b.label}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {worldRegions.map((reg) => (
+                  <tr key={reg.id} className="border-b border-[#142030] last:border-b-0">
+                    <td className="px-2 py-1 text-slate-200 font-medium whitespace-nowrap">{reg.name}</td>
+                    <td className="px-1.5 py-1 text-center text-slate-300 whitespace-nowrap">
+                      {reg.solarPhase}
+                    </td>
+                    <td className="px-1.5 py-1 text-center text-sky-300 font-semibold whitespace-nowrap">
+                      {reg.localMufMhz}
+                    </td>
+                    {BANDS.map((b) => {
+                      const rating = reg.bands[b.id];
+                      const st = CELL_STYLES[rating];
+                      return (
+                        <td key={b.id} className="p-0.5 text-center">
+                          <span
+                            className={`inline-block w-full rounded border px-1 py-0.5 text-[9.5px] font-semibold ${st.badge}`}
+                          >
+                            {st.short}
+                          </span>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* Local QTH Band-by-Band Matrix */}
+        <div>
+          <h3 className="text-xs font-display font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
+            Station QTH HF Band Forecast {qth ? `(${qth.grid})` : ''}
           </h3>
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5">
             {BANDS.map((b) => {
-              const ev = evaluateBandCondition(b.id, conditions);
-              const badgeColor =
-                ev.rating === 'Excellent'
-                  ? 'text-emerald-300 border-emerald-500/40 bg-emerald-500/10'
-                  : ev.rating === 'Good'
-                  ? 'text-sky-300 border-sky-500/40 bg-sky-500/10'
-                  : ev.rating === 'Aurora'
-                  ? 'text-purple-300 border-purple-500/40 bg-purple-500/10'
-                  : ev.rating === 'Fair'
-                  ? 'text-amber-300 border-amber-500/40 bg-amber-500/10'
-                  : 'text-rose-300 border-rose-500/40 bg-rose-500/10';
+              const ev = evaluateBandCondition(b.id, conditions, qth);
+              const badgeColor = CELL_STYLES[ev.rating].badge;
               return (
-                <div key={b.id} className={`rounded border px-2.5 py-2 ${badgeColor}`}>
+                <div key={b.id} className={`rounded border px-2 py-1.5 ${badgeColor}`}>
                   <div className="flex items-center justify-between text-xs font-semibold">
                     <span className="font-display">{b.label}</span>
                     <span>{ev.rating}</span>
                   </div>
-                  <div className="text-[10px] font-mono-tabular opacity-80 mt-0.5">
-                    QRN {ev.noiseDbm} dBm
+                  <div className="text-[9.5px] font-mono-tabular opacity-85 mt-0.5 whitespace-nowrap">
+                    MUF {ev.mufMhz} · {ev.noiseDbm} dBm
                   </div>
                 </div>
               );
