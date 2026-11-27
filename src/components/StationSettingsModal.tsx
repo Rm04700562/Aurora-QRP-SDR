@@ -4,7 +4,9 @@ import { maidenheadFromLatLon } from '../radio/physics';
 import { QthLocation } from '../types/radio';
 
 const QTH_PRESETS: Array<{ label: string; qth: QthLocation }> = [
-  { label: 'Durban, South Africa (KG43)', qth: { lat: -29.8587, lon: 31.0218, grid: 'KG43' } },
+  { label: 'Cape Town, South Africa (JF96)', qth: { lat: -33.9249, lon: 18.4241, grid: 'JF96' } },
+  { label: 'Johannesburg, South Africa (KG43)', qth: { lat: -26.2041, lon: 28.0473, grid: 'KG43' } },
+  { label: 'Durban, South Africa (KG50)', qth: { lat: -29.8587, lon: 31.0218, grid: 'KG50' } },
   { label: 'Frankfurt, Germany (JO40)', qth: { lat: 50.1109, lon: 8.6821, grid: 'JO40' } },
   { label: 'New York, USA (FN30)', qth: { lat: 40.7128, lon: -74.006, grid: 'FN30' } },
   { label: 'Tokyo, Japan (PM95)', qth: { lat: 35.6762, lon: 139.6503, grid: 'PM95' } },

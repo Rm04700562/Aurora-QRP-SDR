@@ -19,6 +19,7 @@ export interface PttMicState {
   isPoweredOn: boolean;
   isTransmitting: boolean;
   pttHeld: boolean;
+  pttLatched: boolean;
   micCapturing: boolean;
   sessionId: number;
 }
@@ -38,12 +39,18 @@ export const INITIAL_PTT_MIC_STATE: PttMicState = {
   isPoweredOn: true,
   isTransmitting: false,
   pttHeld: false,
+  pttLatched: false,
   micCapturing: false,
   sessionId: 0,
 };
 
 export function canCaptureAudio(state: PttMicState): boolean {
-  return state.isPoweredOn && state.isTransmitting && state.pttHeld && state.micCapturing;
+  return (
+    state.isPoweredOn &&
+    state.isTransmitting &&
+    (state.pttHeld || state.pttLatched) &&
+    state.micCapturing
+  );
 }
 
 export function beginPttHold(state: PttMicState): PttMicState {
@@ -52,19 +59,60 @@ export function beginPttHold(state: PttMicState): PttMicState {
       ...state,
       isTransmitting: false,
       pttHeld: false,
+      pttLatched: false,
       micCapturing: false,
     };
   }
-  if (state.pttHeld && state.isTransmitting) {
+  if ((state.pttHeld || state.pttLatched) && state.isTransmitting) {
     return state;
   }
   return {
     ...state,
     isTransmitting: true,
     pttHeld: true,
+    pttLatched: false,
     micCapturing: false,
     sessionId: state.sessionId + 1,
   };
+}
+
+export function beginPttLatch(state: PttMicState): PttMicState {
+  if (!state.isPoweredOn) {
+    return {
+      ...state,
+      isTransmitting: false,
+      pttHeld: false,
+      pttLatched: false,
+      micCapturing: false,
+    };
+  }
+  if (state.pttLatched && state.isTransmitting) {
+    return state;
+  }
+  return {
+    ...state,
+    isTransmitting: true,
+    pttHeld: false,
+    pttLatched: true,
+    micCapturing: state.pttHeld ? state.micCapturing : false,
+    sessionId: state.pttHeld ? state.sessionId : state.sessionId + 1,
+  };
+}
+
+export function togglePttLatch(state: PttMicState): PttMicState {
+  if (!state.isPoweredOn) {
+    return {
+      ...state,
+      isTransmitting: false,
+      pttHeld: false,
+      pttLatched: false,
+      micCapturing: false,
+    };
+  }
+  if (state.pttLatched && state.isTransmitting) {
+    return endPttHold(state, 'manual_rx');
+  }
+  return beginPttLatch(state);
 }
 
 export function resolvePttMicStart(
@@ -72,19 +120,19 @@ export function resolvePttMicStart(
   requestSessionId: number,
   granted: boolean
 ): MicResolutionResult {
-  const stillHoldingSameSession =
+  const stillActiveSameSession =
     state.isPoweredOn &&
     state.isTransmitting &&
-    state.pttHeld &&
+    (state.pttHeld || state.pttLatched) &&
     state.sessionId === requestSessionId;
 
-  if (!granted || !stillHoldingSameSession) {
+  if (!granted || !stillActiveSameSession) {
     return {
       nextState: {
         ...state,
         micCapturing: false,
       },
-      shouldStopStreamImmediately: granted && !stillHoldingSameSession,
+      shouldStopStreamImmediately: granted && !stillActiveSameSession,
     };
   }
 
@@ -102,6 +150,7 @@ export function endPttHold(state: PttMicState, _reason: PttStopReason): PttMicSt
     ...state,
     isTransmitting: false,
     pttHeld: false,
+    pttLatched: false,
     micCapturing: false,
     sessionId: state.sessionId + 1,
   };
@@ -113,6 +162,7 @@ export function setPowerState(state: PttMicState, isPoweredOn: boolean): PttMicS
       isPoweredOn: false,
       isTransmitting: false,
       pttHeld: false,
+      pttLatched: false,
       micCapturing: false,
       sessionId: state.sessionId + 1,
     };
@@ -129,17 +179,19 @@ export function beginAutomatedTx(state: PttMicState): PttMicState {
     ...state,
     isTransmitting: true,
     pttHeld: false,
+    pttLatched: false,
     micCapturing: false,
     sessionId: state.sessionId + 1,
   };
 }
 
 export function endAutomatedTx(state: PttMicState): PttMicState {
-  if (state.pttHeld) return state;
+  if (state.pttHeld || state.pttLatched) return state;
   return {
     ...state,
     isTransmitting: false,
     pttHeld: false,
+    pttLatched: false,
     micCapturing: false,
     sessionId: state.sessionId + 1,
   };

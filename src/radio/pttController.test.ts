@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   beginAutomatedTx,
   beginPttHold,
+  beginPttLatch,
   canCaptureAudio,
   endAutomatedTx,
   endPttHold,
@@ -11,11 +12,13 @@ import {
   PttStopReason,
   resolvePttMicStart,
   setPowerState,
+  togglePttLatch,
 } from './pttController';
 
 test('microphone starts inactive by default in RX', () => {
   assert.equal(INITIAL_PTT_MIC_STATE.isTransmitting, false);
   assert.equal(INITIAL_PTT_MIC_STATE.pttHeld, false);
+  assert.equal(INITIAL_PTT_MIC_STATE.pttLatched, false);
   assert.equal(INITIAL_PTT_MIC_STATE.micCapturing, false);
   assert.equal(canCaptureAudio(INITIAL_PTT_MIC_STATE), false);
 });
@@ -105,6 +108,34 @@ test('automated digital TX never captures microphone audio in background', () =>
   const rx = endAutomatedTx(tx);
   assert.equal(rx.isTransmitting, false);
   assert.equal(rx.micCapturing, false);
+});
+
+test('PTT latch locks TX and mic active until toggled off or powered off', () => {
+  const latched = beginPttLatch(INITIAL_PTT_MIC_STATE);
+  assert.equal(latched.isTransmitting, true);
+  assert.equal(latched.pttLatched, true);
+  assert.equal(latched.pttHeld, false);
+
+  const active = resolvePttMicStart(latched, latched.sessionId, true).nextState;
+  assert.equal(canCaptureAudio(active), true);
+
+  // Automated TX end does not drop a latched operator PTT
+  const stillLatched = endAutomatedTx(active);
+  assert.equal(stillLatched.isTransmitting, true);
+  assert.equal(stillLatched.pttLatched, true);
+
+  // Toggling latch returns safely to RX
+  const unlatched = togglePttLatch(stillLatched);
+  assert.equal(unlatched.isTransmitting, false);
+  assert.equal(unlatched.pttLatched, false);
+  assert.equal(unlatched.micCapturing, false);
+  assert.equal(canCaptureAudio(unlatched), false);
+
+  // Power off also clears latch safely
+  const reLatched = togglePttLatch(unlatched);
+  const off = setPowerState(reLatched, false);
+  assert.equal(off.isTransmitting, false);
+  assert.equal(off.pttLatched, false);
 });
 
 test('mic visual badge accurately reflects RX, TX Mic Live, and digital TX states', () => {

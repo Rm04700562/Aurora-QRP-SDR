@@ -11,10 +11,13 @@ import { LeftControlColumn } from './components/LeftControlColumn';
 import { PropagationModal } from './components/PropagationModal';
 import { PttMicPanel } from './components/PttMicPanel';
 import { QsoLogModal } from './components/QsoLogModal';
+import { SpeakerGrille } from './components/SpeakerGrille';
 import { StationSettingsModal } from './components/StationSettingsModal';
 import { VfoDeck } from './components/VfoDeck';
 import { WorldMapPanel } from './components/WorldMapPanel';
 import { estimateQthFromTimeZone } from './radio/azimuthalMap';
+import { PROPAGATION_BEACONS } from './radio/beacons';
+import { WaterfallSignalBurst } from './radio/waterfall';
 import {
   decodeBase64ToRgb,
   DEFAULT_RTTY_CONFIG,
@@ -23,6 +26,7 @@ import {
   formatHrCallsign,
   getHrCountrySpec,
   parseFt8Message,
+  resolveGridForCallsign,
   rttyDurationMs,
   sanitizeFt8Message,
   sanitizeRttyText,
@@ -69,11 +73,13 @@ import {
   PttStopReason,
   resolvePttMicStart,
   setPowerState,
+  togglePttLatch,
 } from './radio/pttController';
 import {
   AdminNotice,
   AntennaId,
   BandId,
+  CallsignRecord,
   DigitalFeedLine,
   DxClusterSpot,
   Ft8DecodedLine,
@@ -93,7 +99,7 @@ import { buildWebSocketUrl, generateFallbackClientId } from './utils/browserComp
 
 const STATION_STORAGE_KEY = 'aurora_qrp_station_v1';
 const RADIO_ID_STORAGE_KEY = 'aurora_radio_id_v1';
-const DEFAULT_QTH: QthLocation = { lat: -29.8587, lon: 31.0218, grid: 'KG43' };
+const DEFAULT_QTH: QthLocation = { lat: -33.9249, lon: 18.4241, grid: 'JF96' };
 
 interface SavedStationProfile {
   callsign?: string;
@@ -154,10 +160,15 @@ export default function App() {
   const initialSaved = useMemo(() => loadSavedStationProfile(), []);
   const initialIdentity = useMemo(() => {
     if (initialSaved?.callsign) {
+      let savedQth = initialSaved.qth ?? DEFAULT_QTH;
+      if (initialSaved.callsign.toUpperCase() === 'ZS1ROM' && savedQth.grid === 'KG43') {
+        savedQth = DEFAULT_QTH;
+        saveStationProfile({ ...initialSaved, qth: DEFAULT_QTH, qthExplicit: true });
+      }
       return {
         callsign: initialSaved.callsign,
         callsignPermanent: Boolean(initialSaved.callsignPermanent),
-        qth: initialSaved.qth ?? DEFAULT_QTH,
+        qth: savedQth,
       };
     }
     const tz = typeof Intl !== 'undefined' ? Intl.DateTimeFormat().resolvedOptions().timeZone : '';
@@ -180,6 +191,7 @@ export default function App() {
   const [clientId, setClientId] = useState<string>('');
   const [remotePeers, setRemotePeers] = useState<RemoteStation[]>([]);
   const [allGlobalStations, setAllGlobalStations] = useState<RemoteStation[]>([]);
+  const [callsignDirectory, setCallsignDirectory] = useState<CallsignRecord[]>([]);
 
   // VFO & Radio State
   const [activeVfo, setActiveVfo] = useState<'A' | 'B'>('A');
@@ -225,6 +237,7 @@ export default function App() {
   const isTransmittingRef = useRef(isTransmitting);
   isTransmittingRef.current = isTransmitting;
   const [pttHeld, setPttHeld] = useState(false);
+  const [pttLatched, setPttLatched] = useState(false);
   const [micEnabled, setMicEnabled] = useState(false);
   const [micLevelDb, setMicLevelDb] = useState(-55.0);
   const [micRms, setMicRms] = useState(0);
@@ -306,6 +319,18 @@ export default function App() {
     audioEngineRef.current = new SdrAudioEngine();
   }
 
+  const signalBurstsRef = useRef<WaterfallSignalBurst[]>([]);
+  const recordSignalBurst = useCallback((burst: Omit<WaterfallSignalBurst, 'startedAtMs' | 'expiresAtMs'> & { durationMs: number }) => {
+    const now = Date.now();
+    const active = signalBurstsRef.current.filter((b) => b.expiresAtMs > now && b.id !== burst.id);
+    active.push({
+      ...burst,
+      startedAtMs: now,
+      expiresAtMs: now + Math.max(200, burst.durationMs),
+    });
+    signalBurstsRef.current = active.slice(-48);
+  }, []);
+
   const currentFreqHz = activeVfo === 'A' ? vfoAFreqHz : vfoBFreqHz;
   const rttyFineRxOffsetHz =
     mode === 'RTTY' || activeModuleTab === 'rtty' ? rttyConfig.fineOffsetHz : 0;
@@ -322,6 +347,12 @@ export default function App() {
   filterWidthKhzRef.current = filterWidthKhz;
   const modeRef = useRef(mode);
   modeRef.current = mode;
+  const antennaIdRef = useRef(antennaId);
+  antennaIdRef.current = antennaId;
+  const rotorHeadingDegRef = useRef(rotorHeadingDeg);
+  rotorHeadingDegRef.current = rotorHeadingDeg;
+  const rfGainPctRef = useRef(rfGainPct);
+  rfGainPctRef.current = rfGainPct;
 
   // Evaluate strictly REAL connected users (zero simulated beacons)
   const evaluatedStations = useMemo(() => {
@@ -357,6 +388,35 @@ export default function App() {
 
   const evaluatedStationsRef = useRef(evaluatedStations);
   evaluatedStationsRef.current = evaluatedStations;
+
+  // Evaluate active-band propagation beacons strictly for waterfall/scope RF display (never in Cluster/Log/S-Meter)
+  const waterfallBeaconStations = useMemo(() => {
+    return PROPAGATION_BEACONS.filter((b) => b.band === activeBand).map((station) => ({
+      station,
+      evalResult: evaluateRemoteSignal({
+        station,
+        rxQth: qth,
+        rxBand: activeBand,
+        rxFrequencyHz: effectiveRxFreqHz,
+        rxMode: mode,
+        rxFilterWidthKhz: filterWidthKhz,
+        rxAntennaId: antennaId,
+        rxRotorHeadingDeg: rotorHeadingDeg,
+        rxRfGainPct: rfGainPct,
+        conditions: propagation,
+      }),
+    }));
+  }, [
+    activeBand,
+    qth,
+    effectiveRxFreqHz,
+    mode,
+    filterWidthKhz,
+    antennaId,
+    rotorHeadingDeg,
+    rfGainPct,
+    propagation,
+  ]);
 
   const bandCondition = useMemo(
     () => evaluateBandCondition(activeBand, propagation, qth),
@@ -566,6 +626,13 @@ export default function App() {
       })
       .catch(() => {});
 
+    fetch('/api/callsigns')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: { records?: CallsignRecord[] } | null) => {
+        if (data?.records && Array.isArray(data.records)) setCallsignDirectory(data.records);
+      })
+      .catch(() => {});
+
     let lastSyncedUtcHourBucket = Math.floor(Date.now() / 3_600_000);
 
     const syncHourlyPropagation = () => {
@@ -741,11 +808,77 @@ export default function App() {
         } else if (msg.type === 'admin:removed') {
           removedByAdmin = true;
           setRemovedBanner(String(msg.reason ?? 'Disconnected from program by ZS1ROM Net Control.'));
+        } else if (msg.type === 'rf:activity') {
+          if (!isPoweredOnRef.current || msg.band !== activeBandRef.current) return;
+          const fromId = String(msg.fromId ?? 'peer');
+          const match = evaluatedStationsRef.current.find((s) => s.station.id === fromId);
+          const activityMode = (msg.mode as RadioMode) ?? 'USB';
+          const activityFreqHz = Number(msg.frequencyHz ?? effectiveRxFreqRef.current);
+          let rxDbm = match?.evalResult.rxPowerDbm;
+          if (rxDbm === undefined && msg.qth && typeof msg.qth === 'object') {
+            const transientStation: RemoteStation = {
+              id: fromId,
+              callsign: 'RX',
+              serverId: 'global',
+              groupId: 'open-hf',
+              band: activeBandRef.current,
+              frequencyHz: activityFreqHz,
+              mode: activityMode,
+              powerW: typeof msg.powerW === 'number' ? msg.powerW : 25,
+              antennaId: 'dipole',
+              rotorHeadingDeg: 0,
+              qth: msg.qth as QthLocation,
+              isTransmitting: true,
+              lastActiveAt: Date.now(),
+            };
+            rxDbm = evaluateRemoteSignal({
+              station: transientStation,
+              rxQth: qthRef.current,
+              rxBand: activeBandRef.current,
+              rxFrequencyHz: effectiveRxFreqRef.current,
+              rxMode: modeRef.current,
+              rxFilterWidthKhz: filterWidthKhzRef.current,
+              rxAntennaId: antennaIdRef.current,
+              rxRotorHeadingDeg: rotorHeadingDegRef.current,
+              rxRfGainPct: rfGainPctRef.current,
+              conditions: propagationRef.current,
+            }).rxPowerDbm;
+          }
+          const isVoiceMode =
+            activityMode === 'USB' ||
+            activityMode === 'LSB' ||
+            activityMode === 'AM' ||
+            activityMode === 'FM';
+          recordSignalBurst({
+            id: `rf-${fromId}`,
+            band: activeBandRef.current,
+            frequencyHz: activityFreqHz,
+            audioOffsetHz: typeof msg.audioOffsetHz === 'number' ? msg.audioOffsetHz : undefined,
+            rttyShiftHz: typeof msg.rttyShiftHz === 'number' ? msg.rttyShiftHz : undefined,
+            mode: activityMode,
+            powerDbm: Math.max(-108, rxDbm ?? -82),
+            durationMs:
+              typeof msg.durationMs === 'number'
+                ? Math.min(8000, Math.max(300, msg.durationMs))
+                : 900,
+            isVoice: isVoiceMode,
+          });
         } else if (msg.type === 'voip:audio') {
           if (!isPoweredOnRef.current || typeof msg.pcm16 !== 'string') return;
           const fromId = msg.fromId as string;
           const match = evaluatedStationsRef.current.find((s) => s.station.id === fromId);
           if (match) {
+            if (match.station.band === activeBandRef.current) {
+              recordSignalBurst({
+                id: `voip-${fromId}`,
+                band: match.station.band,
+                frequencyHz: match.station.frequencyHz,
+                mode: match.station.mode,
+                powerDbm: Math.max(-108, match.evalResult.rxPowerDbm),
+                durationMs: 420,
+                isVoice: true,
+              });
+            }
             if (match.evalResult.inPassband && match.evalResult.propagationOpen) {
               audioEngineRef.current?.playIncomingVoipPcm({
                 pcm16Base64: msg.pcm16,
@@ -767,6 +900,17 @@ export default function App() {
               rxFilterWidthKhz: filterWidthKhzRef.current,
               conditions: propagationRef.current,
             });
+            if (msg.band === activeBandRef.current) {
+              recordSignalBurst({
+                id: `voip-${fromId}`,
+                band: msg.band as BandId,
+                frequencyHz: Number(msg.frequencyHz ?? effectiveRxFreqRef.current),
+                mode: (msg.mode as RadioMode) ?? 'USB',
+                powerDbm: -74,
+                durationMs: 420,
+                isVoice: true,
+              });
+            }
             if (gate.allowed) {
               audioEngineRef.current?.playIncomingVoipPcm({
                 pcm16Base64: msg.pcm16,
@@ -797,6 +941,16 @@ export default function App() {
                     conditions: propagationRef.current,
                   }).allowed
               );
+          if ((match?.station.band ?? msg.band) === activeBandRef.current) {
+            recordSignalBurst({
+              id: `cw-${fromId}`,
+              band: (match?.station.band ?? msg.band ?? activeBandRef.current) as BandId,
+              frequencyHz: Number(msg.frequencyHz ?? match?.station.frequencyHz ?? effectiveRxFreqRef.current),
+              mode: 'CW',
+              powerDbm: Math.max(-108, match ? match.evalResult.rxPowerDbm : -74),
+              durationMs: Math.max(900, morseDurationMs(msg.text, typeof msg.wpm === 'number' ? msg.wpm : 15)),
+            });
+          }
           if (canDecode) {
             const sender = String(msg.callsign ?? 'RX');
             setCwDecodedText(`${sender}: ${msg.text}`);
@@ -827,6 +981,21 @@ export default function App() {
           if (!isPoweredOnRef.current) return;
           const fromId = msg.fromId as string;
           const match = evaluatedStationsRef.current.find((s) => s.station.id === fromId);
+          const peerCfg =
+            msg.rttyConfig && typeof msg.rttyConfig === 'object'
+              ? (msg.rttyConfig as Partial<RttyConfig>)
+              : rttyConfigRef.current;
+          if ((match?.station.band ?? msg.band) === activeBandRef.current) {
+            recordSignalBurst({
+              id: `rtty-${fromId}`,
+              band: (match?.station.band ?? msg.band ?? activeBandRef.current) as BandId,
+              frequencyHz: Number(msg.frequencyHz ?? match?.station.frequencyHz ?? effectiveRxFreqRef.current),
+              mode: 'RTTY',
+              powerDbm: Math.max(-108, match ? match.evalResult.rxPowerDbm : -72),
+              rttyShiftHz: peerCfg.shiftHz ?? 170,
+              durationMs: Math.max(1000, Math.min(7000, rttyDurationMs(msg.text, peerCfg))),
+            });
+          }
           const canDecode = match
             ? match.evalResult.inPassband && match.evalResult.propagationOpen
             : Boolean(
@@ -844,10 +1013,6 @@ export default function App() {
               );
           if (canDecode) {
             const sender = String(msg.callsign ?? 'RX');
-            const peerCfg =
-              msg.rttyConfig && typeof msg.rttyConfig === 'object'
-                ? (msg.rttyConfig as Partial<RttyConfig>)
-                : rttyConfigRef.current;
             const rxRfDeltaHz = Math.max(
               -450,
               Math.min(450, Number(msg.frequencyHz ?? effectiveRxFreqRef.current) - effectiveRxFreqRef.current)
@@ -877,10 +1042,21 @@ export default function App() {
           if (!isPoweredOnRef.current) return;
           const fromId = msg.fromId as string;
           const match = evaluatedStationsRef.current.find((s) => s.station.id === fromId);
+          if ((match?.station.band ?? msg.band) === activeBandRef.current) {
+            recordSignalBurst({
+              id: `ft8-${fromId}-${Number(msg.audioFreqHz ?? 1250)}`,
+              band: (match?.station.band ?? msg.band ?? activeBandRef.current) as BandId,
+              frequencyHz: Number(msg.frequencyHz ?? match?.station.frequencyHz ?? effectiveRxFreqRef.current),
+              audioOffsetHz: Number(msg.audioFreqHz ?? 1250),
+              mode: 'FT8',
+              powerDbm: Math.max(-108, match ? match.evalResult.rxPowerDbm : -76),
+              durationMs: 4400,
+            });
+          }
           const canDecode = match
             ? match.station.band === activeBandRef.current &&
-              Math.abs(match.evalResult.freqOffsetHz) <= 2500 &&
-              match.evalResult.propagationOpen
+              Math.abs(match.evalResult.freqOffsetHz) <= 3000 &&
+              (match.evalResult.propagationOpen || match.evalResult.snrDb + 18 >= -24)
             : Boolean(
                 msg.qth &&
                   isSameFrequencyAndPropagationOpen({
@@ -890,7 +1066,8 @@ export default function App() {
                     txBand: msg.band as BandId,
                     rxFrequencyHz: effectiveRxFreqRef.current,
                     txFrequencyHz: Number(msg.frequencyHz ?? 0),
-                    maxFreqDeltaHz: 2500,
+                    maxFreqDeltaHz: 3000,
+                    weakSignalDigital: true,
                     conditions: propagationRef.current,
                   }).allowed
               );
@@ -919,6 +1096,17 @@ export default function App() {
           if (!isPoweredOnRef.current) return;
           const fromId = msg.fromId as string;
           const match = evaluatedStationsRef.current.find((s) => s.station.id === fromId);
+          const sstvMode = (msg.sstvMode as SstvModeId) || 'Robot 36';
+          if ((match?.station.band ?? msg.band) === activeBandRef.current) {
+            recordSignalBurst({
+              id: `sstv-${fromId}`,
+              band: (match?.station.band ?? msg.band ?? activeBandRef.current) as BandId,
+              frequencyHz: Number(msg.frequencyHz ?? match?.station.frequencyHz ?? effectiveRxFreqRef.current),
+              mode: 'SSTV',
+              powerDbm: Math.max(-108, match ? match.evalResult.rxPowerDbm : -72),
+              durationMs: (SSTV_MODE_SPECS[sstvMode] ?? SSTV_MODE_SPECS['Robot 36']).txSweepMs,
+            });
+          }
           const canDecode = match
             ? match.evalResult.inPassband && match.evalResult.propagationOpen
             : Boolean(
@@ -936,7 +1124,6 @@ export default function App() {
               );
           if (!canDecode) return;
 
-          const sstvMode = (msg.sstvMode as SstvModeId) || 'Robot 36';
           const width = Number(msg.width ?? SSTV_WIDTH);
           const height = Number(msg.height ?? SSTV_HEIGHT);
           const frame: SstvFramePayload = {
@@ -1064,7 +1251,13 @@ export default function App() {
 
   const handleStopPtt = useCallback(
     (reason: PttStopReason = 'pointerup') => {
-      pttMicRef.current = endPttHold(pttMicRef.current, reason);
+      const next = endPttHold(pttMicRef.current, reason);
+      pttMicRef.current = next;
+      setPttHeld(next.pttHeld);
+      setPttLatched(next.pttLatched);
+      if (next.isTransmitting) {
+        return;
+      }
       clearCwTimers();
       clearDigitalTimers();
       audioEngineRef.current?.stopMorseSequence();
@@ -1072,7 +1265,6 @@ export default function App() {
       audioEngineRef.current?.setTransmitting(false);
       isSendingCwRef.current = false;
       isTransmittingRef.current = false;
-      setPttHeld(false);
       setMicEnabled(false);
       setIsSendingCw(false);
       setCwTxProgress(0);
@@ -1148,6 +1340,7 @@ export default function App() {
         isSendingCwRef.current = false;
         isTransmittingRef.current = false;
         setPttHeld(false);
+        setPttLatched(false);
         setIsSendingCw(false);
         setIsSendingRtty(false);
         setIsSendingSstv(false);
@@ -1189,7 +1382,12 @@ export default function App() {
     async (requestSessionId: number): Promise<boolean> => {
       const canProceed = () => {
         const cur = pttMicRef.current;
-        return cur.isPoweredOn && cur.isTransmitting && cur.pttHeld && cur.sessionId === requestSessionId;
+        return (
+          cur.isPoweredOn &&
+          cur.isTransmitting &&
+          (cur.pttHeld || cur.pttLatched) &&
+          cur.sessionId === requestSessionId
+        );
       };
 
       if (!canProceed()) {
@@ -1249,7 +1447,7 @@ export default function App() {
 
   const handleStartPtt = useCallback(() => {
     if (!isPoweredOnRef.current) return;
-    if (pttMicRef.current.pttHeld && pttMicRef.current.isTransmitting) return;
+    if ((pttMicRef.current.pttHeld || pttMicRef.current.pttLatched) && pttMicRef.current.isTransmitting) return;
 
     const nextState = beginPttHold({
       ...pttMicRef.current,
@@ -1261,6 +1459,7 @@ export default function App() {
     audioEngineRef.current?.setTransmitting(true);
     isTransmittingRef.current = true;
     setPttHeld(true);
+    setPttLatched(nextState.pttLatched);
     setIsTransmitting(true);
     setChecklist((c) => ({ ...c, transmittedOrCw: true }));
 
@@ -1273,46 +1472,94 @@ export default function App() {
     void startMicCaptureForPtt(nextState.sessionId);
   }, [mode, callsign, startMicCaptureForPtt]);
 
+  const handleTogglePttLatch = useCallback(() => {
+    if (!isPoweredOnRef.current) return;
+    const nextState = togglePttLatch({
+      ...pttMicRef.current,
+      isPoweredOn: isPoweredOnRef.current,
+    });
+    pttMicRef.current = nextState;
+    setPttHeld(nextState.pttHeld);
+    setPttLatched(nextState.pttLatched);
+
+    if (nextState.pttLatched && nextState.isTransmitting) {
+      audioEngineRef.current?.ensureContext();
+      audioEngineRef.current?.setTransmitting(true);
+      isTransmittingRef.current = true;
+      setIsTransmitting(true);
+      setChecklist((c) => ({ ...c, transmittedOrCw: true }));
+
+      if (mode === 'CW' || mode === 'RTTY' || mode === 'SSTV' || mode === 'FT8') {
+        audioEngineRef.current?.startContinuousModeTxTone(mode, rttyConfigRef.current, callsign);
+        setMicLevelDb(-9.5);
+        setAlcPct(62);
+      }
+
+      void startMicCaptureForPtt(nextState.sessionId);
+    } else {
+      clearCwTimers();
+      clearDigitalTimers();
+      audioEngineRef.current?.stopMorseSequence();
+      audioEngineRef.current?.stopMicrophone();
+      audioEngineRef.current?.setTransmitting(false);
+      isSendingCwRef.current = false;
+      isTransmittingRef.current = false;
+      setMicEnabled(false);
+      setIsSendingCw(false);
+      setCwTxProgress(0);
+      setIsSendingRtty(false);
+      setIsSendingSstv(false);
+      setIsSendingFt8(false);
+      setSstvTxProgress(0);
+      setIsTransmitting(false);
+      setMicRms(0);
+      setMicLevelDb(-55.0);
+      setAlcPct(12);
+    }
+  }, [mode, callsign, startMicCaptureForPtt, clearCwTimers, clearDigitalTimers]);
+
   // Global keyboard Hold-to-Talk + safety release on window pointerup/cancel/blur/visibilitychange/pagehide
   useEffect(() => {
+    const shouldReleaseHold = () => pttMicRef.current.pttHeld && !pttMicRef.current.pttLatched;
     const onKeyDown = (e: KeyboardEvent) => {
       if (!isPoweredOnRef.current || e.code !== 'Space') return;
       const tag = (e.target as HTMLElement | null)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'BUTTON') return;
       e.preventDefault();
       if (!e.repeat) {
-        handleStartPtt();
+        if (pttMicRef.current.pttLatched) handleTogglePttLatch();
+        else handleStartPtt();
       }
     };
     const onKeyUp = (e: KeyboardEvent) => {
       if (e.code !== 'Space') return;
-      if (pttMicRef.current.pttHeld) {
+      if (shouldReleaseHold()) {
         e.preventDefault();
         handleStopPtt('keyup');
       }
     };
     const onWindowPointerUp = () => {
-      if (pttMicRef.current.pttHeld) {
+      if (shouldReleaseHold()) {
         handleStopPtt('pointerup');
       }
     };
     const onWindowPointerCancel = () => {
-      if (pttMicRef.current.pttHeld) {
+      if (shouldReleaseHold()) {
         handleStopPtt('pointercancel');
       }
     };
     const onWindowBlur = () => {
-      if (pttMicRef.current.pttHeld) {
+      if (shouldReleaseHold()) {
         handleStopPtt('window_blur');
       }
     };
     const onVisibilityChange = () => {
-      if (document.hidden && pttMicRef.current.pttHeld) {
+      if (document.hidden && shouldReleaseHold()) {
         handleStopPtt('visibility_hidden');
       }
     };
     const onPageHide = () => {
-      if (pttMicRef.current.pttHeld) {
+      if (shouldReleaseHold()) {
         handleStopPtt('pagehide');
       }
     };
@@ -1333,7 +1580,7 @@ export default function App() {
       window.removeEventListener('pagehide', onPageHide);
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, [handleStartPtt, handleStopPtt]);
+  }, [handleStartPtt, handleStopPtt, handleTogglePttLatch]);
 
   const setActiveFrequency = useCallback(
     (nextHz: number, targetBand?: BandId) => {
@@ -1888,9 +2135,95 @@ export default function App() {
     }
   }, []);
 
+  const chassisRef = useRef<HTMLDivElement | null>(null);
+  const [viewportSize, setViewportSize] = useState<{ w: number; h: number }>(() => {
+    if (typeof window === 'undefined') return { w: 1280, h: 800 };
+    return {
+      w: window.visualViewport?.width ?? window.innerWidth,
+      h: window.visualViewport?.height ?? window.innerHeight,
+    };
+  });
+  const [chassisNatural, setChassisNatural] = useState<{ w: number; h: number }>({ w: 1160, h: 660 });
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const syncViewport = () => {
+      setViewportSize({
+        w: Math.round(window.visualViewport?.width ?? window.innerWidth),
+        h: Math.round(window.visualViewport?.height ?? window.innerHeight),
+      });
+    };
+    syncViewport();
+    window.addEventListener('resize', syncViewport);
+    window.addEventListener('orientationchange', syncViewport);
+    window.visualViewport?.addEventListener('resize', syncViewport);
+    return () => {
+      window.removeEventListener('resize', syncViewport);
+      window.removeEventListener('orientationchange', syncViewport);
+      window.visualViewport?.removeEventListener('resize', syncViewport);
+    };
+  }, []);
+
+  useEffect(() => {
+    const el = chassisRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const measure = () => {
+      const w = el.offsetWidth;
+      const h = el.offsetHeight;
+      if (w > 0 && h > 0) {
+        setChassisNatural((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
+      }
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  const isLandscapeViewport = viewportSize.w > viewportSize.h;
+  const landscapeScale =
+    isLandscapeViewport && chassisNatural.w > 0 && chassisNatural.h > 0
+      ? Math.min(
+          1,
+          Math.max(0.25, (viewportSize.w - 8) / chassisNatural.w),
+          Math.max(0.25, (viewportSize.h - 8) / chassisNatural.h)
+        )
+      : 1;
+
   return (
-    <div className="min-h-dvh bg-[#04070c] flex items-center justify-center p-1 sm:p-1.5 pb-[max(0.25rem,env(safe-area-inset-bottom))] text-slate-100">
-      <div className="w-full max-w-[1160px] sdr-chassis rounded-xl border border-[#1f3147] shadow-[0_24px_64px_rgba(0,0,0,0.85)] overflow-hidden flex flex-col">
+    <div
+      data-testid="radio-viewport-shell"
+      className={
+        isLandscapeViewport
+          ? 'h-dvh w-screen overflow-hidden bg-[#04070c] flex items-center justify-center p-1 text-slate-100'
+          : 'min-h-dvh bg-[#04070c] flex items-center justify-center p-1 sm:p-1.5 pb-[max(0.25rem,env(safe-area-inset-bottom))] text-slate-100'
+      }
+    >
+      <div
+        style={
+          isLandscapeViewport
+            ? {
+                width: Math.floor(chassisNatural.w * landscapeScale),
+                height: Math.floor(chassisNatural.h * landscapeScale),
+              }
+            : undefined
+        }
+        className={isLandscapeViewport ? 'relative shrink-0' : 'w-full max-w-[1160px]'}
+      >
+        <div
+          ref={chassisRef}
+          style={
+            isLandscapeViewport && landscapeScale < 0.999
+              ? {
+                  transform: `scale(${landscapeScale})`,
+                  transformOrigin: 'top left',
+                }
+              : undefined
+          }
+          className={`${
+            isLandscapeViewport ? 'w-[1160px]' : 'w-full max-w-[1160px]'
+          } sdr-chassis rounded-xl border border-[#1f3147] shadow-[0_24px_64px_rgba(0,0,0,0.85)] overflow-hidden flex flex-col`}
+        >
         <HeaderBar
           wsStatus={wsStatus}
           serverId={serverId}
@@ -1942,7 +2275,7 @@ export default function App() {
             isPoweredOn ? 'opacity-100' : 'opacity-45 pointer-events-none select-none'
           }`}
         >
-          <div className="flex flex-col lg:flex-row gap-1.5">
+          <div className="flex flex-col landscape:flex-row lg:flex-row gap-1.5">
             {/* Left Column: Antenna, Rotor, Band, Propagation Conditions */}
             <LeftControlColumn
               antennaId={antennaId}
@@ -1967,8 +2300,8 @@ export default function App() {
 
             {/* Center Column: 5 Old-School S-Meters, VFO Deck, Group Switcher */}
             <div className="flex-1 flex flex-col gap-1.5 min-w-0">
-              {/* 5 Old-School Analog Meters */}
-              <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-1.5">
+              {/* 5 Old-School Analog Meters (with small monitor speaker directly under ALC) */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 landscape:grid-cols-5 xl:grid-cols-5 gap-1.5 items-start">
                 <AnalogMeter
                   testId="s-meter"
                   label="S-Meter"
@@ -1998,17 +2331,20 @@ export default function App() {
                   dangerFrom={0.5}
                   subtitle="Voltage Standing Wave Ratio (turns red above 1.6; click Tune to match antenna)"
                 />
-                <AnalogMeter
-                  label="ALC"
-                  dialLegend="ALC %"
-                  valueText={isPoweredOn ? `${isTransmitting ? alcPct : 12}%` : '--'}
-                  normalized={isPoweredOn ? (isTransmitting ? alcPct : 12) / 100 : 0}
-                  ticks={['0', '25', '50', '75', '100']}
-                  accent={alcPct > 80 && isTransmitting ? 'amber' : 'cyan'}
-                  isPoweredOn={isPoweredOn}
-                  dangerFrom={0.75}
-                  subtitle="Automatic Level Control during modulation"
-                />
+                <div className="flex flex-col gap-1">
+                  <AnalogMeter
+                    label="ALC"
+                    dialLegend="ALC %"
+                    valueText={isPoweredOn ? `${isTransmitting ? alcPct : 12}%` : '--'}
+                    normalized={isPoweredOn ? (isTransmitting ? alcPct : 12) / 100 : 0}
+                    ticks={['0', '25', '50', '75', '100']}
+                    accent={alcPct > 80 && isTransmitting ? 'amber' : 'cyan'}
+                    isPoweredOn={isPoweredOn}
+                    dangerFrom={0.75}
+                    subtitle="Automatic Level Control during modulation"
+                  />
+                  <SpeakerGrille />
+                </div>
                 <AnalogMeter
                   label="Compression"
                   shortLabel="Comp"
@@ -2084,11 +2420,13 @@ export default function App() {
                 micLevelDb={isPoweredOn ? micLevelDb : -55}
                 isTransmitting={isTransmitting && isPoweredOn}
                 pttHeld={pttHeld && isPoweredOn}
+                pttLatched={pttLatched && isPoweredOn}
                 onStartPtt={handleStartPtt}
                 onStopPtt={() => handleStopPtt('pointerup')}
+                onTogglePttLatch={handleTogglePttLatch}
               />
 
-              {/* Group Switcher: Waterfall (Live Users Only), CW, RTTY, SSTV, FT8, Live Cluster */}
+              {/* Group Switcher: Waterfall, CW, RTTY, SSTV, FT8, Live Cluster, Prop Map */}
               <CenterModeSwitcher
                 activeTab={activeModuleTab}
                 onChangeTab={setActiveModuleTab}
@@ -2101,13 +2439,21 @@ export default function App() {
                 onSelectBand={handleSelectBand}
                 frequencyHz={effectiveRxFreqHz}
                 onTuneToFrequency={handleTuneToFrequency}
+                onTuneDelta={handleTuneDelta}
+                stepHz={stepHz}
                 filterWidthKhz={filterWidthKhz}
                 rfGainPct={rfGainPct}
                 noiseFloorDbm={bandCondition.noiseDbm}
+                noiseReductionPct={noiseReductionPct}
+                noiseBlankerPct={noiseBlankerPct}
+                notchPct={notchPct}
+                ritHz={ritHz}
                 isTransmitting={isTransmitting}
                 micRms={micRms}
                 mode={mode}
                 stations={evaluatedStations}
+                beaconStations={waterfallBeaconStations}
+                signalBurstsRef={signalBurstsRef}
                 allGlobalStations={allGlobalStations}
                 spanKhz={spanKhz}
                 onChangeSpanKhz={setSpanKhz}
@@ -2134,6 +2480,8 @@ export default function App() {
                 onLoopbackDecodeRtty={handleLoopbackRtty}
                 onStopDigitalTx={handleStopDigitalTx}
                 onLogQso={(dxCall, qsoMode) => {
+                  const dxGrid =
+                    resolveGridForCallsign(dxCall, remotePeers, callsignDirectory) || qth.grid;
                   void handleAddQso({
                     callsign: dxCall,
                     band: activeBand,
@@ -2142,7 +2490,7 @@ export default function App() {
                     rstSent: '599',
                     rstRcvd: '599',
                     powerW: deliveredPowerW,
-                    grid: qth.grid,
+                    grid: dxGrid,
                     notes: `${qsoMode} contact via Aurora 100W SDR`,
                   });
                   setShowQsoModal(true);
@@ -2174,7 +2522,7 @@ export default function App() {
             </div>
 
             {/* Right Column: World Map + DSP Buttons + ATU + QSO Log */}
-            <aside className="flex flex-col gap-1 w-full lg:w-[222px] shrink-0">
+            <aside className="flex flex-col gap-1 w-full landscape:w-[222px] lg:w-[222px] shrink-0">
               <WorldMapPanel
                 qth={qth}
                 rotorHeadingDeg={rotorHeadingDeg}
@@ -2251,6 +2599,7 @@ export default function App() {
             )}
           </div>
         </footer>
+        </div>
       </div>
 
       {/* Modals */}
@@ -2272,7 +2621,18 @@ export default function App() {
         currentMode={mode}
         currentPowerW={deliveredPowerW}
         suggestedCallsign={bestInPassband?.station.callsign.replace('/B', '') ?? ''}
-        suggestedGrid={bestInPassband?.station.qth.grid ?? ''}
+        suggestedGrid={
+          bestInPassband?.station.qth.grid ??
+          (bestInPassband?.station.callsign
+            ? resolveGridForCallsign(
+                bestInPassband.station.callsign.replace('/B', ''),
+                remotePeers,
+                callsignDirectory
+              )
+            : '')
+        }
+        knownStations={remotePeers}
+        callsignRecords={callsignDirectory}
         onAddQso={handleAddQso}
         onDeleteQso={handleDeleteQso}
         onClose={() => setShowQsoModal(false)}
@@ -2324,6 +2684,12 @@ export default function App() {
             powerVersion: 2,
             compressionPct,
           });
+          fetch('/api/callsigns')
+            .then((r) => (r.ok ? r.json() : null))
+            .then((data: { records?: CallsignRecord[] } | null) => {
+              if (data?.records && Array.isArray(data.records)) setCallsignDirectory(data.records);
+            })
+            .catch(() => {});
         }}
         onClose={() => setShowCallsignModal(false)}
       />

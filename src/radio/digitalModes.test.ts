@@ -307,3 +307,59 @@ test('RTTY fine-tune steps center frequency in exact 10Hz increments and preserv
   assert.equal(offset, -80);
 });
 
+import { HR_COUNTRY_LIST, resolveGridForCallsign, resolvePrefixCountryInfo } from './digitalModes';
+import { maidenheadFromLatLon } from './physics';
+
+test('resolveGridForCallsign and HR_COUNTRY_LIST produce geographically accurate Maidenhead grids per country and callsign', () => {
+  for (const country of HR_COUNTRY_LIST) {
+    const computed = maidenheadFromLatLon(country.defaultQth.lat, country.defaultQth.lon);
+    assert.equal(
+      country.defaultQth.grid,
+      computed,
+      `Country ${country.code} (${country.name}) grid ${country.defaultQth.grid} != computed ${computed}`
+    );
+  }
+
+  assert.equal(getHrCountrySpec('ZA').defaultQth.grid, 'JF96');
+  assert.equal(detectCountryFromTimeZone('Africa/Cape_Town'), 'ZA');
+
+  // Registered directory takes priority (ZS1ROM -> Cape Town JF96)
+  assert.equal(
+    resolveGridForCallsign('zs1rom', [], [{ callsign: 'ZS1ROM', grid: 'JF96' }]),
+    'JF96'
+  );
+  // Regional & country prefix resolution
+  assert.equal(resolveGridForCallsign('ZS1ROM'), 'JF96');
+  assert.equal(resolveGridForCallsign('ZS5ABC'), 'KG50');
+  assert.equal(resolveGridForCallsign('ZS6XYZ'), 'KG43');
+  assert.equal(resolveGridForCallsign('26HR001'), 'IO91');
+  assert.equal(resolveGridForCallsign('44HR001'), 'JF96');
+  assert.equal(resolveGridForCallsign('W1AW'), 'FN31');
+  assert.equal(resolveGridForCallsign('K6ABC/P'), 'CM87');
+  assert.equal(resolveGridForCallsign('G4XYZ'), 'IO91');
+  assert.equal(resolveGridForCallsign('GM4ABC'), 'IO75');
+  assert.equal(resolveGridForCallsign('DL2QRP'), 'JO40');
+  assert.equal(resolveGridForCallsign('JA1XYZ'), 'PM95');
+  assert.equal(resolveGridForCallsign('VK2DX'), 'QF56');
+  assert.equal(resolveGridForCallsign('ZL2ABC'), 'RE78');
+  assert.equal(resolvePrefixCountryInfo('VE7TEST')?.countryCode, 'CA');
+  assert.equal(resolveGridForCallsign('VE7TEST'), 'CN89');
+});
+
+test('parseFt8Message handles 3-part directed CQ calls cleanly for replying', () => {
+  const dirNoGrid = parseFt8Message('CQ DX ZS1ROM');
+  assert.equal(dirNoGrid.isCq, true);
+  assert.equal(dirNoGrid.toCall, 'CQ DX');
+  assert.equal(dirNoGrid.fromCall, 'ZS1ROM');
+
+  assert.equal(
+    canAutoReplyFt8Row({ direction: 'RX', isCq: true, callsign: '', message: 'CQ DX ZS1ROM' }, '26HR001'),
+    true
+  );
+  assert.deepEqual(
+    buildFt8AutoReplyPayload({ callsign: '', audioFreqHz: 1400, message: 'CQ DX ZS1ROM' }, '26HR001', 'IO91'),
+    { dxCall: 'ZS1ROM', message: 'ZS1ROM 26HR001 IO91', audioFreqHz: 1400 }
+  );
+});
+
+

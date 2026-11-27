@@ -423,7 +423,10 @@ export const DspControlPanel: React.FC<DspControlPanelProps> = ({
               <button
                 type="button"
                 disabled={!isPoweredOn}
-                onClick={() => onChangePaGain(7)}
+                onClick={() => {
+                  if (!paEnabled) onTogglePa();
+                  onChangePaGain(7);
+                }}
                 aria-pressed={paGainDb === 7}
                 data-testid="pa-gain-5x"
                 className={`px-1.5 py-0.5 rounded border text-[10px] font-mono-tabular cursor-pointer transition-colors whitespace-nowrap disabled:opacity-45 disabled:cursor-not-allowed ${
@@ -438,7 +441,10 @@ export const DspControlPanel: React.FC<DspControlPanelProps> = ({
               <button
                 type="button"
                 disabled={!isPoweredOn}
-                onClick={() => onChangePaGain(10)}
+                onClick={() => {
+                  if (!paEnabled) onTogglePa();
+                  onChangePaGain(10);
+                }}
                 aria-pressed={paGainDb === 10}
                 data-testid="pa-gain-10x"
                 className={`px-1.5 py-0.5 rounded border text-[10px] font-mono-tabular cursor-pointer transition-colors whitespace-nowrap disabled:opacity-45 disabled:cursor-not-allowed ${

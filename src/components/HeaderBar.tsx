@@ -91,7 +91,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
   }, []);
 
   return (
-    <header className="flex flex-wrap xl:flex-nowrap items-center justify-between gap-1.5 px-2 py-1 border-b border-[#1c2b3d] bg-[#090e16]/95">
+    <header className="flex flex-wrap landscape:flex-nowrap xl:flex-nowrap items-center justify-between gap-1.5 px-2 py-1 border-b border-[#1c2b3d] bg-[#090e16]/95">
       {/* Left Brand + Power Switch */}
       <div className="flex items-center gap-1.5 shrink-0">
         <button
@@ -129,7 +129,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
       </div>
 
       {/* Right Controls */}
-      <div className="flex flex-wrap xl:flex-nowrap items-center justify-end gap-1 min-w-0">
+      <div className="flex flex-wrap landscape:flex-nowrap xl:flex-nowrap items-center justify-end gap-1 min-w-0">
         <button
           type="button"
           onClick={onToggleAudio}

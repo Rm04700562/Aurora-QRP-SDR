@@ -14,8 +14,8 @@ export interface HrCountrySpec {
 
 export const HR_COUNTRY_LIST: HrCountrySpec[] = [
   { code: 'GB', name: 'United Kingdom', division: '26', defaultQth: { lat: 51.5072, lon: -0.1276, grid: 'IO91' } },
-  { code: 'ZA', name: 'South Africa', division: '44', defaultQth: { lat: -29.8587, lon: 31.0218, grid: 'KG43' } },
-  { code: 'US', name: 'United States', division: '2', defaultQth: { lat: 40.7128, lon: -74.006, grid: 'FN30' } },
+  { code: 'ZA', name: 'South Africa', division: '44', defaultQth: { lat: -33.9249, lon: 18.4241, grid: 'JF96' } },
+  { code: 'US', name: 'United States', division: '2', defaultQth: { lat: 40.7128, lon: -73.98, grid: 'FN30' } },
   { code: 'CA', name: 'Canada', division: '9', defaultQth: { lat: 45.4215, lon: -75.6972, grid: 'FN25' } },
   { code: 'DE', name: 'Germany', division: '13', defaultQth: { lat: 50.1109, lon: 8.6821, grid: 'JO40' } },
   { code: 'FR', name: 'France', division: '14', defaultQth: { lat: 48.8566, lon: 2.3522, grid: 'JN18' } },
@@ -47,7 +47,7 @@ export function formatHrCallsign(countryCode: string, unitNumber: number): strin
 export function detectCountryFromTimeZone(tz: string): string {
   const lower = tz.toLowerCase();
   if (lower.includes('london') || lower.includes('belfast') || lower.includes('jersey')) return 'GB';
-  if (lower.includes('johannesburg') || lower.includes('africa/maseru')) return 'ZA';
+  if (lower.includes('johannesburg') || lower.includes('cape_town') || lower.includes('africa/maseru')) return 'ZA';
   if (lower.includes('berlin') || lower.includes('busingen')) return 'DE';
   if (lower.includes('paris')) return 'FR';
   if (lower.includes('rome')) return 'IT';
@@ -70,6 +70,273 @@ export function isValidHamCallsign(callsign: string): boolean {
   const cleaned = callsign.trim().toUpperCase();
   // Standard ITU amateur radio format: 1-2 prefix chars (incl digits), 1 digit, 1-4 suffix letters (+ optional /P, /M, /QRP)
   return /^[A-Z0-9]{1,3}[0-9][A-Z0-9]{1,4}(\/[A-Z0-9]{1,4})?$/.test(cleaned) && !/^\d+HR\d+$/.test(cleaned);
+}
+
+interface PrefixGridEntry {
+  prefix: string;
+  countryCode: string;
+  countryName: string;
+  grid: string;
+  lat: number;
+  lon: number;
+}
+
+// Accurate ITU amateur call-area and country Maidenhead grid mapping (longest prefix match wins)
+const CALLSIGN_PREFIX_ENTRIES: PrefixGridEntry[] = [
+  // Exact notable club/beacon reference stations
+  { prefix: 'W1AW', countryCode: 'US', countryName: 'United States', grid: 'FN31', lat: 41.7148, lon: -72.7272 },
+  // South Africa (ZS/ZR/ZT/ZU call areas)
+  { prefix: 'ZS1', countryCode: 'ZA', countryName: 'South Africa', grid: 'JF96', lat: -33.9249, lon: 18.4241 },
+  { prefix: 'ZR1', countryCode: 'ZA', countryName: 'South Africa', grid: 'JF96', lat: -33.9249, lon: 18.4241 },
+  { prefix: 'ZT1', countryCode: 'ZA', countryName: 'South Africa', grid: 'JF96', lat: -33.9249, lon: 18.4241 },
+  { prefix: 'ZU1', countryCode: 'ZA', countryName: 'South Africa', grid: 'JF96', lat: -33.9249, lon: 18.4241 },
+  { prefix: 'ZS2', countryCode: 'ZA', countryName: 'South Africa', grid: 'KF26', lat: -33.9608, lon: 25.6022 },
+  { prefix: 'ZR2', countryCode: 'ZA', countryName: 'South Africa', grid: 'KF26', lat: -33.9608, lon: 25.6022 },
+  { prefix: 'ZU2', countryCode: 'ZA', countryName: 'South Africa', grid: 'KF26', lat: -33.9608, lon: 25.6022 },
+  { prefix: 'ZS3', countryCode: 'ZA', countryName: 'South Africa', grid: 'KG21', lat: -28.7282, lon: 24.7499 },
+  { prefix: 'ZS4', countryCode: 'ZA', countryName: 'South Africa', grid: 'KG30', lat: -29.0852, lon: 26.1596 },
+  { prefix: 'ZS5', countryCode: 'ZA', countryName: 'South Africa', grid: 'KG50', lat: -29.8587, lon: 31.0218 },
+  { prefix: 'ZR5', countryCode: 'ZA', countryName: 'South Africa', grid: 'KG50', lat: -29.8587, lon: 31.0218 },
+  { prefix: 'ZU5', countryCode: 'ZA', countryName: 'South Africa', grid: 'KG50', lat: -29.8587, lon: 31.0218 },
+  { prefix: 'ZS6', countryCode: 'ZA', countryName: 'South Africa', grid: 'KG43', lat: -26.2041, lon: 28.0473 },
+  { prefix: 'ZR6', countryCode: 'ZA', countryName: 'South Africa', grid: 'KG43', lat: -26.2041, lon: 28.0473 },
+  { prefix: 'ZT6', countryCode: 'ZA', countryName: 'South Africa', grid: 'KG43', lat: -26.2041, lon: 28.0473 },
+  { prefix: 'ZU6', countryCode: 'ZA', countryName: 'South Africa', grid: 'KG43', lat: -26.2041, lon: 28.0473 },
+  { prefix: 'ZS', countryCode: 'ZA', countryName: 'South Africa', grid: 'JF96', lat: -33.9249, lon: 18.4241 },
+  { prefix: 'ZR', countryCode: 'ZA', countryName: 'South Africa', grid: 'JF96', lat: -33.9249, lon: 18.4241 },
+  { prefix: 'ZT', countryCode: 'ZA', countryName: 'South Africa', grid: 'JF96', lat: -33.9249, lon: 18.4241 },
+  { prefix: 'ZU', countryCode: 'ZA', countryName: 'South Africa', grid: 'JF96', lat: -33.9249, lon: 18.4241 },
+  // Southern & East Africa
+  { prefix: 'V5', countryCode: 'NA', countryName: 'Namibia', grid: 'JG87', lat: -22.5609, lon: 17.0658 },
+  { prefix: 'A2', countryCode: 'BW', countryName: 'Botswana', grid: 'KG25', lat: -24.6282, lon: 25.9231 },
+  { prefix: 'Z2', countryCode: 'ZW', countryName: 'Zimbabwe', grid: 'KH52', lat: -17.8252, lon: 31.0335 },
+  { prefix: '5Z', countryCode: 'KE', countryName: 'Kenya', grid: 'KI88', lat: -1.2921, lon: 36.8219 },
+  { prefix: '5N', countryCode: 'NG', countryName: 'Nigeria', grid: 'JJ16', lat: 6.5244, lon: 3.3792 },
+  { prefix: 'SU', countryCode: 'EG', countryName: 'Egypt', grid: 'KL50', lat: 30.0444, lon: 31.2357 },
+  { prefix: 'CN', countryCode: 'MA', countryName: 'Morocco', grid: 'IM63', lat: 33.5731, lon: -7.5898 },
+  // United Kingdom & Crown Dependencies
+  { prefix: 'GM', countryCode: 'GB', countryName: 'United Kingdom', grid: 'IO75', lat: 55.9533, lon: -4.2518 },
+  { prefix: 'MM', countryCode: 'GB', countryName: 'United Kingdom', grid: 'IO75', lat: 55.9533, lon: -4.2518 },
+  { prefix: '2M', countryCode: 'GB', countryName: 'United Kingdom', grid: 'IO75', lat: 55.9533, lon: -4.2518 },
+  { prefix: 'GW', countryCode: 'GB', countryName: 'United Kingdom', grid: 'IO81', lat: 51.4816, lon: -3.1791 },
+  { prefix: 'MW', countryCode: 'GB', countryName: 'United Kingdom', grid: 'IO81', lat: 51.4816, lon: -3.1791 },
+  { prefix: '2W', countryCode: 'GB', countryName: 'United Kingdom', grid: 'IO81', lat: 51.4816, lon: -3.1791 },
+  { prefix: 'GI', countryCode: 'GB', countryName: 'United Kingdom', grid: 'IO74', lat: 54.5973, lon: -5.9301 },
+  { prefix: 'MI', countryCode: 'GB', countryName: 'United Kingdom', grid: 'IO74', lat: 54.5973, lon: -5.9301 },
+  { prefix: '2I', countryCode: 'GB', countryName: 'United Kingdom', grid: 'IO74', lat: 54.5973, lon: -5.9301 },
+  { prefix: '2E', countryCode: 'GB', countryName: 'United Kingdom', grid: 'IO91', lat: 51.5072, lon: -0.1276 },
+  { prefix: 'G', countryCode: 'GB', countryName: 'United Kingdom', grid: 'IO91', lat: 51.5072, lon: -0.1276 },
+  { prefix: 'M', countryCode: 'GB', countryName: 'United Kingdom', grid: 'IO91', lat: 51.5072, lon: -0.1276 },
+  // Ireland
+  { prefix: 'EI', countryCode: 'IE', countryName: 'Ireland', grid: 'IO63', lat: 53.3498, lon: -6.2603 },
+  { prefix: 'EJ', countryCode: 'IE', countryName: 'Ireland', grid: 'IO63', lat: 53.3498, lon: -6.2603 },
+  // United States call areas 0..9
+  ...(['W', 'K', 'N', 'AA', 'AB', 'AC', 'AD', 'AE', 'AF', 'AG', 'AI', 'AJ', 'AK', 'AL'] as const).flatMap(
+    (p) => [
+      { prefix: `${p}1`, countryCode: 'US', countryName: 'United States', grid: 'FN42', lat: 42.3601, lon: -71.0589 },
+      { prefix: `${p}2`, countryCode: 'US', countryName: 'United States', grid: 'FN30', lat: 40.7128, lon: -74.006 },
+      { prefix: `${p}3`, countryCode: 'US', countryName: 'United States', grid: 'FM19', lat: 39.2904, lon: -76.6122 },
+      { prefix: `${p}4`, countryCode: 'US', countryName: 'United States', grid: 'EM73', lat: 33.749, lon: -84.388 },
+      { prefix: `${p}5`, countryCode: 'US', countryName: 'United States', grid: 'EM12', lat: 32.7767, lon: -96.797 },
+      { prefix: `${p}6`, countryCode: 'US', countryName: 'United States', grid: 'CM87', lat: 37.7749, lon: -122.4194 },
+      { prefix: `${p}7`, countryCode: 'US', countryName: 'United States', grid: 'CN87', lat: 47.6062, lon: -122.3321 },
+      { prefix: `${p}8`, countryCode: 'US', countryName: 'United States', grid: 'EN81', lat: 41.4993, lon: -81.6944 },
+      { prefix: `${p}9`, countryCode: 'US', countryName: 'United States', grid: 'EN61', lat: 41.8781, lon: -87.6298 },
+      { prefix: `${p}0`, countryCode: 'US', countryName: 'United States', grid: 'DM79', lat: 39.7392, lon: -104.9903 },
+    ]
+  ),
+  { prefix: 'KH6', countryCode: 'US', countryName: 'United States', grid: 'BL11', lat: 21.3069, lon: -157.8583 },
+  { prefix: 'KL7', countryCode: 'US', countryName: 'United States', grid: 'BP51', lat: 61.2181, lon: -149.9003 },
+  // Canada call areas
+  { prefix: 'VE1', countryCode: 'CA', countryName: 'Canada', grid: 'FN84', lat: 44.6488, lon: -63.5752 },
+  { prefix: 'VA1', countryCode: 'CA', countryName: 'Canada', grid: 'FN84', lat: 44.6488, lon: -63.5752 },
+  { prefix: 'VE2', countryCode: 'CA', countryName: 'Canada', grid: 'FN35', lat: 45.5017, lon: -73.5673 },
+  { prefix: 'VA2', countryCode: 'CA', countryName: 'Canada', grid: 'FN35', lat: 45.5017, lon: -73.5673 },
+  { prefix: 'VE3', countryCode: 'CA', countryName: 'Canada', grid: 'FN03', lat: 43.6532, lon: -79.3832 },
+  { prefix: 'VA3', countryCode: 'CA', countryName: 'Canada', grid: 'FN03', lat: 43.6532, lon: -79.3832 },
+  { prefix: 'VE4', countryCode: 'CA', countryName: 'Canada', grid: 'EN19', lat: 49.8951, lon: -97.1384 },
+  { prefix: 'VE5', countryCode: 'CA', countryName: 'Canada', grid: 'DO70', lat: 50.4452, lon: -104.6189 },
+  { prefix: 'VE6', countryCode: 'CA', countryName: 'Canada', grid: 'DO21', lat: 51.0447, lon: -114.0719 },
+  { prefix: 'VE7', countryCode: 'CA', countryName: 'Canada', grid: 'CN89', lat: 49.2827, lon: -123.1207 },
+  { prefix: 'VA7', countryCode: 'CA', countryName: 'Canada', grid: 'CN89', lat: 49.2827, lon: -123.1207 },
+  { prefix: 'VE', countryCode: 'CA', countryName: 'Canada', grid: 'FN25', lat: 45.4215, lon: -75.6972 },
+  { prefix: 'VA', countryCode: 'CA', countryName: 'Canada', grid: 'FN25', lat: 45.4215, lon: -75.6972 },
+  { prefix: 'VO', countryCode: 'CA', countryName: 'Canada', grid: 'GN37', lat: 47.5615, lon: -52.7126 },
+  { prefix: 'VY', countryCode: 'CA', countryName: 'Canada', grid: 'FN86', lat: 46.2382, lon: -63.1311 },
+  // Europe
+  { prefix: 'DL', countryCode: 'DE', countryName: 'Germany', grid: 'JO40', lat: 50.1109, lon: 8.6821 },
+  { prefix: 'DA', countryCode: 'DE', countryName: 'Germany', grid: 'JO40', lat: 50.1109, lon: 8.6821 },
+  { prefix: 'DB', countryCode: 'DE', countryName: 'Germany', grid: 'JO40', lat: 50.1109, lon: 8.6821 },
+  { prefix: 'DC', countryCode: 'DE', countryName: 'Germany', grid: 'JO40', lat: 50.1109, lon: 8.6821 },
+  { prefix: 'DD', countryCode: 'DE', countryName: 'Germany', grid: 'JO40', lat: 50.1109, lon: 8.6821 },
+  { prefix: 'DF', countryCode: 'DE', countryName: 'Germany', grid: 'JO40', lat: 50.1109, lon: 8.6821 },
+  { prefix: 'DG', countryCode: 'DE', countryName: 'Germany', grid: 'JO40', lat: 50.1109, lon: 8.6821 },
+  { prefix: 'DH', countryCode: 'DE', countryName: 'Germany', grid: 'JO40', lat: 50.1109, lon: 8.6821 },
+  { prefix: 'DJ', countryCode: 'DE', countryName: 'Germany', grid: 'JO40', lat: 50.1109, lon: 8.6821 },
+  { prefix: 'DK', countryCode: 'DE', countryName: 'Germany', grid: 'JO40', lat: 50.1109, lon: 8.6821 },
+  { prefix: 'DM', countryCode: 'DE', countryName: 'Germany', grid: 'JO62', lat: 52.52, lon: 13.405 },
+  { prefix: 'DN', countryCode: 'DE', countryName: 'Germany', grid: 'JO40', lat: 50.1109, lon: 8.6821 },
+  { prefix: 'DO', countryCode: 'DE', countryName: 'Germany', grid: 'JO40', lat: 50.1109, lon: 8.6821 },
+  { prefix: 'DR', countryCode: 'DE', countryName: 'Germany', grid: 'JO40', lat: 50.1109, lon: 8.6821 },
+  { prefix: 'F', countryCode: 'FR', countryName: 'France', grid: 'JN18', lat: 48.8566, lon: 2.3522 },
+  { prefix: 'TM', countryCode: 'FR', countryName: 'France', grid: 'JN18', lat: 48.8566, lon: 2.3522 },
+  { prefix: 'IK', countryCode: 'IT', countryName: 'Italy', grid: 'JN61', lat: 41.9028, lon: 12.4964 },
+  { prefix: 'IZ', countryCode: 'IT', countryName: 'Italy', grid: 'JN61', lat: 41.9028, lon: 12.4964 },
+  { prefix: 'IU', countryCode: 'IT', countryName: 'Italy', grid: 'JN61', lat: 41.9028, lon: 12.4964 },
+  { prefix: 'IW', countryCode: 'IT', countryName: 'Italy', grid: 'JN61', lat: 41.9028, lon: 12.4964 },
+  { prefix: 'I', countryCode: 'IT', countryName: 'Italy', grid: 'JN61', lat: 41.9028, lon: 12.4964 },
+  { prefix: 'EA8', countryCode: 'ES', countryName: 'Spain', grid: 'IL28', lat: 28.1235, lon: -15.4363 },
+  { prefix: 'EA', countryCode: 'ES', countryName: 'Spain', grid: 'IN80', lat: 40.4168, lon: -3.7038 },
+  { prefix: 'EB', countryCode: 'ES', countryName: 'Spain', grid: 'IN80', lat: 40.4168, lon: -3.7038 },
+  { prefix: 'EC', countryCode: 'ES', countryName: 'Spain', grid: 'IN80', lat: 40.4168, lon: -3.7038 },
+  { prefix: 'CT', countryCode: 'PT', countryName: 'Portugal', grid: 'IM58', lat: 38.7223, lon: -9.1393 },
+  { prefix: 'PA', countryCode: 'NL', countryName: 'Netherlands', grid: 'JO22', lat: 52.3676, lon: 4.9041 },
+  { prefix: 'PB', countryCode: 'NL', countryName: 'Netherlands', grid: 'JO22', lat: 52.3676, lon: 4.9041 },
+  { prefix: 'PC', countryCode: 'NL', countryName: 'Netherlands', grid: 'JO22', lat: 52.3676, lon: 4.9041 },
+  { prefix: 'PD', countryCode: 'NL', countryName: 'Netherlands', grid: 'JO22', lat: 52.3676, lon: 4.9041 },
+  { prefix: 'PE', countryCode: 'NL', countryName: 'Netherlands', grid: 'JO22', lat: 52.3676, lon: 4.9041 },
+  { prefix: 'PH', countryCode: 'NL', countryName: 'Netherlands', grid: 'JO22', lat: 52.3676, lon: 4.9041 },
+  { prefix: 'PI', countryCode: 'NL', countryName: 'Netherlands', grid: 'JO22', lat: 52.3676, lon: 4.9041 },
+  { prefix: 'ON', countryCode: 'BE', countryName: 'Belgium', grid: 'JO20', lat: 50.8503, lon: 4.3517 },
+  { prefix: 'OO', countryCode: 'BE', countryName: 'Belgium', grid: 'JO20', lat: 50.8503, lon: 4.3517 },
+  { prefix: 'OT', countryCode: 'BE', countryName: 'Belgium', grid: 'JO20', lat: 50.8503, lon: 4.3517 },
+  { prefix: 'SM', countryCode: 'SE', countryName: 'Sweden', grid: 'JO99', lat: 59.3293, lon: 18.0686 },
+  { prefix: 'SA', countryCode: 'SE', countryName: 'Sweden', grid: 'JO99', lat: 59.3293, lon: 18.0686 },
+  { prefix: 'SK', countryCode: 'SE', countryName: 'Sweden', grid: 'JO99', lat: 59.3293, lon: 18.0686 },
+  { prefix: 'LA', countryCode: 'NO', countryName: 'Norway', grid: 'JO59', lat: 59.9139, lon: 10.7522 },
+  { prefix: 'LB', countryCode: 'NO', countryName: 'Norway', grid: 'JO59', lat: 59.9139, lon: 10.7522 },
+  { prefix: 'OH', countryCode: 'FI', countryName: 'Finland', grid: 'KP20', lat: 60.1699, lon: 24.9384 },
+  { prefix: 'OZ', countryCode: 'DK', countryName: 'Denmark', grid: 'JO65', lat: 55.6761, lon: 12.5683 },
+  { prefix: 'HB9', countryCode: 'CH', countryName: 'Switzerland', grid: 'JN47', lat: 47.3769, lon: 8.5417 },
+  { prefix: 'HB3', countryCode: 'CH', countryName: 'Switzerland', grid: 'JN47', lat: 47.3769, lon: 8.5417 },
+  { prefix: 'OE', countryCode: 'AT', countryName: 'Austria', grid: 'JN88', lat: 48.2082, lon: 16.3738 },
+  { prefix: 'SP', countryCode: 'PL', countryName: 'Poland', grid: 'KO02', lat: 52.2297, lon: 21.0122 },
+  { prefix: 'SQ', countryCode: 'PL', countryName: 'Poland', grid: 'KO02', lat: 52.2297, lon: 21.0122 },
+  { prefix: 'OK', countryCode: 'CZ', countryName: 'Czechia', grid: 'JN79', lat: 50.0755, lon: 14.4378 },
+  { prefix: 'SV', countryCode: 'GR', countryName: 'Greece', grid: 'KM18', lat: 37.9838, lon: 23.7275 },
+  { prefix: 'UA', countryCode: 'RU', countryName: 'Russia', grid: 'KO85', lat: 55.7558, lon: 37.6173 },
+  { prefix: 'RA', countryCode: 'RU', countryName: 'Russia', grid: 'KO85', lat: 55.7558, lon: 37.6173 },
+  { prefix: 'UR', countryCode: 'UA', countryName: 'Ukraine', grid: 'KO50', lat: 50.4501, lon: 30.5234 },
+  // Asia-Pacific & Americas
+  { prefix: 'JA1', countryCode: 'JP', countryName: 'Japan', grid: 'PM95', lat: 35.6762, lon: 139.6503 },
+  { prefix: 'JA3', countryCode: 'JP', countryName: 'Japan', grid: 'PM74', lat: 34.6937, lon: 135.5023 },
+  { prefix: 'JA6', countryCode: 'JP', countryName: 'Japan', grid: 'PM53', lat: 33.5902, lon: 130.4017 },
+  { prefix: 'JA8', countryCode: 'JP', countryName: 'Japan', grid: 'QN03', lat: 43.0618, lon: 141.3545 },
+  { prefix: 'JA', countryCode: 'JP', countryName: 'Japan', grid: 'PM95', lat: 35.6762, lon: 139.6503 },
+  { prefix: 'JH', countryCode: 'JP', countryName: 'Japan', grid: 'PM95', lat: 35.6762, lon: 139.6503 },
+  { prefix: 'JR', countryCode: 'JP', countryName: 'Japan', grid: 'PM95', lat: 35.6762, lon: 139.6503 },
+  { prefix: 'JE', countryCode: 'JP', countryName: 'Japan', grid: 'PM95', lat: 35.6762, lon: 139.6503 },
+  { prefix: 'JF', countryCode: 'JP', countryName: 'Japan', grid: 'PM95', lat: 35.6762, lon: 139.6503 },
+  { prefix: 'JG', countryCode: 'JP', countryName: 'Japan', grid: 'PM95', lat: 35.6762, lon: 139.6503 },
+  { prefix: 'JI', countryCode: 'JP', countryName: 'Japan', grid: 'PM95', lat: 35.6762, lon: 139.6503 },
+  { prefix: 'JJ', countryCode: 'JP', countryName: 'Japan', grid: 'PM95', lat: 35.6762, lon: 139.6503 },
+  { prefix: 'JK', countryCode: 'JP', countryName: 'Japan', grid: 'PM95', lat: 35.6762, lon: 139.6503 },
+  { prefix: 'JL', countryCode: 'JP', countryName: 'Japan', grid: 'PM95', lat: 35.6762, lon: 139.6503 },
+  { prefix: 'JM', countryCode: 'JP', countryName: 'Japan', grid: 'PM95', lat: 35.6762, lon: 139.6503 },
+  { prefix: 'JN', countryCode: 'JP', countryName: 'Japan', grid: 'PM95', lat: 35.6762, lon: 139.6503 },
+  { prefix: 'JO', countryCode: 'JP', countryName: 'Japan', grid: 'PM95', lat: 35.6762, lon: 139.6503 },
+  { prefix: 'JP', countryCode: 'JP', countryName: 'Japan', grid: 'PM95', lat: 35.6762, lon: 139.6503 },
+  { prefix: 'JQ', countryCode: 'JP', countryName: 'Japan', grid: 'PM95', lat: 35.6762, lon: 139.6503 },
+  { prefix: 'JS', countryCode: 'JP', countryName: 'Japan', grid: 'PM95', lat: 35.6762, lon: 139.6503 },
+  { prefix: '7J', countryCode: 'JP', countryName: 'Japan', grid: 'PM95', lat: 35.6762, lon: 139.6503 },
+  { prefix: '7K', countryCode: 'JP', countryName: 'Japan', grid: 'PM95', lat: 35.6762, lon: 139.6503 },
+  { prefix: 'VK1', countryCode: 'AU', countryName: 'Australia', grid: 'QF44', lat: -35.2809, lon: 149.13 },
+  { prefix: 'VK2', countryCode: 'AU', countryName: 'Australia', grid: 'QF56', lat: -33.8688, lon: 151.2093 },
+  { prefix: 'VK3', countryCode: 'AU', countryName: 'Australia', grid: 'QF22', lat: -37.8136, lon: 144.9631 },
+  { prefix: 'VK4', countryCode: 'AU', countryName: 'Australia', grid: 'QG62', lat: -27.4698, lon: 153.0251 },
+  { prefix: 'VK5', countryCode: 'AU', countryName: 'Australia', grid: 'PF95', lat: -34.9285, lon: 138.6007 },
+  { prefix: 'VK6', countryCode: 'AU', countryName: 'Australia', grid: 'OF78', lat: -31.9505, lon: 115.8605 },
+  { prefix: 'VK7', countryCode: 'AU', countryName: 'Australia', grid: 'QE37', lat: -42.8821, lon: 147.3272 },
+  { prefix: 'VK', countryCode: 'AU', countryName: 'Australia', grid: 'QF56', lat: -33.8688, lon: 151.2093 },
+  { prefix: 'ZL1', countryCode: 'NZ', countryName: 'New Zealand', grid: 'RF73', lat: -36.8485, lon: 174.7633 },
+  { prefix: 'ZL2', countryCode: 'NZ', countryName: 'New Zealand', grid: 'RE78', lat: -41.2865, lon: 174.7762 },
+  { prefix: 'ZL3', countryCode: 'NZ', countryName: 'New Zealand', grid: 'RE66', lat: -43.5321, lon: 172.6362 },
+  { prefix: 'ZL4', countryCode: 'NZ', countryName: 'New Zealand', grid: 'RE54', lat: -45.8788, lon: 170.5028 },
+  { prefix: 'ZL', countryCode: 'NZ', countryName: 'New Zealand', grid: 'RF73', lat: -36.8485, lon: 174.7633 },
+  { prefix: 'PY1', countryCode: 'BR', countryName: 'Brazil', grid: 'GG87', lat: -22.9068, lon: -43.1729 },
+  { prefix: 'PY', countryCode: 'BR', countryName: 'Brazil', grid: 'GG66', lat: -23.5505, lon: -46.6333 },
+  { prefix: 'PP', countryCode: 'BR', countryName: 'Brazil', grid: 'GG66', lat: -23.5505, lon: -46.6333 },
+  { prefix: 'PU', countryCode: 'BR', countryName: 'Brazil', grid: 'GG66', lat: -23.5505, lon: -46.6333 },
+  { prefix: 'LU', countryCode: 'AR', countryName: 'Argentina', grid: 'GF05', lat: -34.6037, lon: -58.3816 },
+  { prefix: 'CE', countryCode: 'CL', countryName: 'Chile', grid: 'FF46', lat: -33.4489, lon: -70.6693 },
+  { prefix: 'XE', countryCode: 'MX', countryName: 'Mexico', grid: 'EK09', lat: 19.4326, lon: -99.1332 },
+  { prefix: 'BY', countryCode: 'CN', countryName: 'China', grid: 'OM89', lat: 39.9042, lon: 116.4074 },
+  { prefix: 'BA', countryCode: 'CN', countryName: 'China', grid: 'OM89', lat: 39.9042, lon: 116.4074 },
+  { prefix: 'BD', countryCode: 'CN', countryName: 'China', grid: 'OM89', lat: 39.9042, lon: 116.4074 },
+  { prefix: 'BG', countryCode: 'CN', countryName: 'China', grid: 'OM89', lat: 39.9042, lon: 116.4074 },
+  { prefix: 'BH', countryCode: 'CN', countryName: 'China', grid: 'OM89', lat: 39.9042, lon: 116.4074 },
+  { prefix: 'BV', countryCode: 'TW', countryName: 'Taiwan', grid: 'PL05', lat: 25.033, lon: 121.5654 },
+  { prefix: 'HL', countryCode: 'KR', countryName: 'South Korea', grid: 'PM37', lat: 37.5665, lon: 126.978 },
+  { prefix: 'DS', countryCode: 'KR', countryName: 'South Korea', grid: 'PM37', lat: 37.5665, lon: 126.978 },
+  { prefix: 'VU', countryCode: 'IN', countryName: 'India', grid: 'ML88', lat: 28.6139, lon: 77.209 },
+  { prefix: '4X', countryCode: 'IL', countryName: 'Israel', grid: 'KM72', lat: 32.0853, lon: 34.7818 },
+  { prefix: '4Z', countryCode: 'IL', countryName: 'Israel', grid: 'KM72', lat: 32.0853, lon: 34.7818 },
+].sort((a, b) => b.prefix.length - a.prefix.length);
+
+export function resolvePrefixCountryInfo(callsign: string): {
+  countryCode: string;
+  countryName: string;
+  qth: QthLocation;
+} | null {
+  const cleaned = callsign.trim().toUpperCase().replace(/[^A-Z0-9/]/g, '');
+  if (!cleaned) return null;
+  const base = cleaned.split('/')[0];
+
+  // Match HR division call signs (e.g. 26HR001 -> GB IO91, 44HR001 -> ZA JF96)
+  const hrMatch = /^(\d{1,3})HR\d+/.exec(base);
+  if (hrMatch) {
+    const div = hrMatch[1];
+    const spec = HR_COUNTRY_LIST.find((c) => c.division === div);
+    if (spec) {
+      return {
+        countryCode: spec.code,
+        countryName: spec.name,
+        qth: { ...spec.defaultQth },
+      };
+    }
+  }
+
+  for (const entry of CALLSIGN_PREFIX_ENTRIES) {
+    if (base.startsWith(entry.prefix)) {
+      return {
+        countryCode: entry.countryCode,
+        countryName: entry.countryName,
+        qth: {
+          lat: entry.lat,
+          lon: entry.lon,
+          grid: maidenheadFromLatLon(entry.lat, entry.lon),
+        },
+      };
+    }
+  }
+
+  return null;
+}
+
+export function resolveGridForCallsign(
+  callsign: string,
+  knownStations: Array<{ callsign: string; qth?: { grid?: string } }> = [],
+  registryRecords: Array<{ callsign: string; grid?: string }> = []
+): string {
+  const cleaned = callsign.trim().toUpperCase().replace(/[^A-Z0-9/]/g, '');
+  if (!cleaned) return '';
+  const base = cleaned.split('/')[0];
+
+  const regMatch = registryRecords.find(
+    (r) => r.callsign.trim().toUpperCase() === cleaned || r.callsign.trim().toUpperCase().split('/')[0] === base
+  );
+  if (regMatch?.grid?.trim()) {
+    return regMatch.grid.trim().toUpperCase();
+  }
+
+  const liveMatch = knownStations.find(
+    (s) => s.callsign.trim().toUpperCase() === cleaned || s.callsign.trim().toUpperCase().split('/')[0] === base
+  );
+  if (liveMatch?.qth?.grid?.trim()) {
+    return liveMatch.qth.grid.trim().toUpperCase();
+  }
+
+  return resolvePrefixCountryInfo(cleaned)?.qth.grid ?? '';
 }
 
 // ---------------------------------------------------------------------------
@@ -450,12 +717,14 @@ export function parseFt8Message(message: string): {
 } {
   const parts = sanitizeFt8Message(message).split(' ').filter(Boolean);
   if (parts[0] === 'CQ') {
-    const isDirected = parts.length >= 4;
+    // Handle both `CQ DX CALL GRID` (4+ tokens) and `CQ DX CALL` (3 tokens where token[1] is modifier like DX/POTA/EU)
+    const secondIsQualifier = parts.length >= 3 && !/\d/.test(parts[1]);
+    const isDirected = parts.length >= 4 || secondIsQualifier;
     return {
       isCq: true,
       toCall: isDirected ? `${parts[0]} ${parts[1]}` : 'CQ',
-      fromCall: isDirected ? parts[2] : parts[1] ?? '',
-      extra: isDirected ? parts[3] : parts[2] ?? '',
+      fromCall: isDirected ? parts[2] ?? '' : parts[1] ?? '',
+      extra: isDirected ? parts[3] ?? '' : parts[2] ?? '',
     };
   }
   return {
@@ -467,21 +736,23 @@ export function parseFt8Message(message: string): {
 }
 
 export function canAutoReplyFt8Row(
-  row: { direction: 'RX' | 'TX'; isCq: boolean; callsign: string },
+  row: { direction: 'RX' | 'TX'; isCq: boolean; callsign: string; message?: string },
   myCallsign: string
 ): boolean {
-  const dx = row.callsign.trim().toUpperCase();
+  const parsedFrom = row.message ? parseFt8Message(row.message).fromCall : '';
+  const dx = (row.callsign || parsedFrom).trim().toUpperCase();
   const mine = myCallsign.trim().toUpperCase();
   return row.direction === 'RX' && row.isCq && Boolean(dx) && dx !== mine;
 }
 
 export function buildFt8AutoReplyPayload(
-  row: { callsign: string; audioFreqHz: number },
+  row: { callsign: string; audioFreqHz: number; message?: string },
   myCallsign: string,
   myGrid: string,
   fallbackAudioFreqHz = 1250
 ): { dxCall: string; message: string; audioFreqHz: number } {
-  const dxCall = row.callsign.trim().toUpperCase();
+  const parsedFrom = row.message ? parseFt8Message(row.message).fromCall : '';
+  const dxCall = (row.callsign || parsedFrom).trim().toUpperCase();
   const grid4 = myGrid.trim().toUpperCase().slice(0, 4) || 'IO91';
   const audioFreqHz =
     Number.isFinite(row.audioFreqHz) && row.audioFreqHz >= 200 && row.audioFreqHz <= 3000

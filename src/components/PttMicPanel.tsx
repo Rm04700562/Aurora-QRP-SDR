@@ -11,8 +11,10 @@ interface PttMicPanelProps {
   micLevelDb: number;
   isTransmitting: boolean;
   pttHeld: boolean;
+  pttLatched: boolean;
   onStartPtt: () => void;
   onStopPtt: () => void;
+  onTogglePttLatch: () => void;
 }
 
 const DIGITAL_TONE_MODES: RadioMode[] = ['CW', 'RTTY', 'SSTV', 'FT8'];
@@ -24,8 +26,10 @@ export const PttMicPanel: React.FC<PttMicPanelProps> = ({
   micLevelDb,
   isTransmitting,
   pttHeld,
+  pttLatched,
   onStartPtt,
   onStopPtt,
+  onTogglePttLatch,
 }) => {
   // Map -55..0 dB to 0..12 segments
   const normLevel = Math.max(0, Math.min(1, (micLevelDb + 55) / 55));
@@ -37,6 +41,10 @@ export const PttMicPanel: React.FC<PttMicPanelProps> = ({
     if (!isPoweredOn) return;
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     e.preventDefault();
+    if (pttLatched) {
+      onTogglePttLatch();
+      return;
+    }
     if (e.pointerType !== 'mouse' && typeof e.currentTarget.setPointerCapture === 'function') {
       try {
         e.currentTarget.setPointerCapture(e.pointerId);
@@ -48,12 +56,14 @@ export const PttMicPanel: React.FC<PttMicPanelProps> = ({
   };
 
   const handlePttRelease = () => {
+    if (pttLatched) return;
     if (pttHeld || isTransmitting) {
       onStopPtt();
     }
   };
 
   const handlePttPointerLeave = (e: React.PointerEvent<HTMLButtonElement>) => {
+    if (pttLatched) return;
     const hasCapture =
       typeof e.currentTarget.hasPointerCapture === 'function' &&
       e.currentTarget.hasPointerCapture(e.pointerId);
@@ -68,7 +78,8 @@ export const PttMicPanel: React.FC<PttMicPanelProps> = ({
       data-tx-state={isTransmitting ? 'TX' : 'RX'}
       data-mic-active={badge.isMicLive ? 'true' : 'false'}
       data-ptt-held={pttHeld ? 'true' : 'false'}
-      className="sdr-panel rounded-md px-2.5 py-1 flex flex-wrap sm:flex-nowrap items-center justify-between gap-2"
+      data-ptt-latched={pttLatched ? 'true' : 'false'}
+      className="sdr-panel rounded-md px-2.5 py-1 flex flex-wrap landscape:flex-nowrap sm:flex-nowrap items-center justify-between gap-2"
     >
       {/* Left: Mic status indicator (synchronized strictly with TX/PTT state) */}
       <div className="flex items-center gap-2 shrink-0">
@@ -85,11 +96,13 @@ export const PttMicPanel: React.FC<PttMicPanelProps> = ({
           data-testid="mic-status-badge"
           data-mic-active={badge.isMicLive ? 'true' : 'false'}
           title={
-            badge.isMicLive
+            pttLatched
+              ? 'PTT latched TX — click Latch or PTT to return to RX'
+              : badge.isMicLive
               ? 'Microphone live and transmitting (release PTT to stop immediately)'
               : badge.isTx
               ? `Transmitting ${mode} signal (microphone inactive)`
-              : 'Microphone inactive in RX — press and hold PTT to capture and transmit'
+              : 'Microphone inactive in RX — press and hold PTT or toggle Latch to transmit'
           }
           className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-mono-tabular border whitespace-nowrap shrink-0 ${
             badge.isMicLive
@@ -136,14 +149,38 @@ export const PttMicPanel: React.FC<PttMicPanelProps> = ({
         </span>
       </div>
 
-      {/* Right: Hold-to-Talk indicator + PTT button */}
-      <div className="flex items-center gap-2 shrink-0">
+      {/* Right: Hold / Latch controls + PTT button */}
+      <div className="flex items-center gap-1.5 shrink-0">
         <span
-          className="px-1.5 py-0.5 rounded border border-[#23344a] bg-[#0a1019] text-[10px] font-mono-tabular text-sky-400 whitespace-nowrap select-none"
+          className={`px-1.5 py-0.5 rounded border text-[10px] font-mono-tabular whitespace-nowrap select-none ${
+            !pttLatched
+              ? 'border-sky-400/50 bg-[#0a1019] text-sky-300'
+              : 'border-[#23344a] bg-[#0a1019] text-slate-500'
+          }`}
           title="Hold-to-Talk: microphone captures only while PTT is pressed and held"
         >
           Hold
         </span>
+
+        <button
+          type="button"
+          disabled={!isPoweredOn}
+          onClick={onTogglePttLatch}
+          data-testid="ptt-latch-button"
+          aria-pressed={pttLatched}
+          title={
+            pttLatched
+              ? 'PTT Latched ON — click to release transmitter back to RX'
+              : 'Latch PTT hands-free TX ON (click again or tap PTT to return to RX)'
+          }
+          className={`px-2 py-0.5 rounded border text-[10px] font-display font-bold uppercase tracking-wider transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed ${
+            pttLatched
+              ? 'bg-amber-500 border-amber-300 text-slate-950 shadow-[0_0_12px_rgba(245,158,11,0.5)]'
+              : 'bg-[#0a1019] border-[#25374d] text-slate-300 hover:border-amber-400/60 hover:text-amber-200'
+          }`}
+        >
+          {pttLatched ? 'Latched' : 'Latch'}
+        </button>
 
         <button
           type="button"
@@ -162,7 +199,8 @@ export const PttMicPanel: React.FC<PttMicPanelProps> = ({
             if (!isPoweredOn) return;
             if ((e.key === 'Enter' || e.key === ' ') && !e.repeat) {
               e.preventDefault();
-              onStartPtt();
+              if (pttLatched) onTogglePttLatch();
+              else onStartPtt();
             }
           }}
           onKeyUp={(e) => {
@@ -180,12 +218,16 @@ export const PttMicPanel: React.FC<PttMicPanelProps> = ({
               ? 'bg-rose-600 border-rose-300 text-white shadow-[0_0_20px_rgba(244,63,94,0.65)] scale-[0.98] cursor-pointer'
               : 'bg-[#0e1826] border-sky-400/70 text-sky-300 hover:bg-sky-500/15 hover:text-white shadow-[0_0_12px_rgba(34,184,255,0.2)] cursor-pointer'
           }`}
-          title="Push To Talk (Press and hold mouse button or Spacebar)"
+          title={
+            pttLatched
+              ? 'Click to unlatch PTT and return to RX'
+              : 'Push To Talk (Press and hold mouse button or Spacebar)'
+          }
         >
           {isTransmitting && badge.isMicLive && (
             <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse mr-1.5" aria-hidden="true" />
           )}
-          {isTransmitting ? 'TX ON' : 'PTT'}
+          {isTransmitting ? (pttLatched ? 'TX LATCH' : 'TX ON') : 'PTT'}
         </button>
       </div>
     </section>

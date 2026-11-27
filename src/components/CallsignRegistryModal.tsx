@@ -5,6 +5,7 @@ import {
   getHrCountrySpec,
   HR_COUNTRY_LIST,
   isValidHamCallsign,
+  resolvePrefixCountryInfo,
 } from '../radio/digitalModes';
 import { CallsignRecord, QthLocation } from '../types/radio';
 
@@ -35,6 +36,7 @@ export const CallsignRegistryModal: React.FC<CallsignRegistryModalProps> = ({
   const [operatorName, setOperatorName] = useState('');
   const [hamCallInput, setHamCallInput] = useState('');
   const [gridInput, setGridInput] = useState(currentGrid);
+  const [hamGridManual, setHamGridManual] = useState(false);
   const [records, setRecords] = useState<CallsignRecord[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [statusMsg, setStatusMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
@@ -133,6 +135,7 @@ export const CallsignRegistryModal: React.FC<CallsignRegistryModalProps> = ({
       });
       const data = (await res.json()) as {
         record?: CallsignRecord;
+        defaultQth?: QthLocation;
         permanentlyAssigned?: boolean;
         alreadyAssigned?: boolean;
         error?: string;
@@ -141,7 +144,7 @@ export const CallsignRegistryModal: React.FC<CallsignRegistryModalProps> = ({
         setStatusMsg({ kind: 'err', text: data.error || 'Registration failed.' });
         return;
       }
-      onApplyIdentity(data.record.callsign, undefined, data.permanentlyAssigned ?? true);
+      onApplyIdentity(data.record.callsign, data.defaultQth, data.permanentlyAssigned ?? true);
       setStatusMsg({
         kind: 'ok',
         text: data.alreadyAssigned
@@ -348,7 +351,17 @@ export const CallsignRegistryModal: React.FC<CallsignRegistryModalProps> = ({
                   data-testid="ham-callsign-input"
                   type="text"
                   value={hamCallInput}
-                  onChange={(e) => setHamCallInput(e.target.value.toUpperCase())}
+                  onChange={(e) => {
+                    const nextCall = e.target.value.toUpperCase();
+                    setHamCallInput(nextCall);
+                    const info = resolvePrefixCountryInfo(nextCall);
+                    if (info) {
+                      setCountryCode(info.countryCode);
+                      if (!hamGridManual || !gridInput.trim()) {
+                        setGridInput(info.qth.grid);
+                      }
+                    }
+                  }}
                   placeholder="e.g. ZS1ROM"
                   className="w-full px-2.5 py-1.5 rounded border border-[#24364d] bg-[#080d14] font-mono-tabular text-xs text-sky-300 uppercase"
                 />
@@ -361,7 +374,13 @@ export const CallsignRegistryModal: React.FC<CallsignRegistryModalProps> = ({
                 <select
                   id="ham-country-select"
                   value={countryCode}
-                  onChange={(e) => setCountryCode(e.target.value)}
+                  onChange={(e) => {
+                    const code = e.target.value;
+                    setCountryCode(code);
+                    if (!hamGridManual) {
+                      setGridInput(getHrCountrySpec(code).defaultQth.grid);
+                    }
+                  }}
                   className="w-full px-2.5 py-1.5 rounded border border-[#24364d] bg-[#080d14] text-xs text-slate-100 cursor-pointer"
                 >
                   {HR_COUNTRY_LIST.map((c) => (
@@ -380,7 +399,11 @@ export const CallsignRegistryModal: React.FC<CallsignRegistryModalProps> = ({
                   id="ham-grid-input"
                   type="text"
                   value={gridInput}
-                  onChange={(e) => setGridInput(e.target.value.toUpperCase())}
+                  onChange={(e) => {
+                    const val = e.target.value.toUpperCase();
+                    setGridInput(val);
+                    setHamGridManual(Boolean(val.trim()));
+                  }}
                   className="w-full px-2.5 py-1.5 rounded border border-[#24364d] bg-[#080d14] font-mono-tabular text-xs text-white uppercase"
                 />
               </div>

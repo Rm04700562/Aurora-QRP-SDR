@@ -29,6 +29,8 @@ import {
   formatHrCallsign,
   getHrCountrySpec,
   isValidHamCallsign,
+  resolveGridForCallsign,
+  resolvePrefixCountryInfo,
   sanitizeFt8Message,
   sanitizeRttyText,
 } from './src/radio/digitalModes';
@@ -45,6 +47,7 @@ const CALLSIGN_STORE_PATH = path.resolve(__dirname, '.aurora-callsigns.json');
 interface ClientConnection {
   ws: WebSocket;
   station: RemoteStation;
+  lastRfActivityAt?: number;
 }
 
 interface AssignedRadioIdentity {
@@ -74,8 +77,8 @@ const callsignRegistry: CallsignRecord[] = [
     type: 'HAM',
     countryCode: 'ZA',
     countryName: 'South Africa',
-    operatorName: 'ZS1ROM Net Control',
-    grid: 'KG43',
+    operatorName: 'ZS1ROM Net Control (Cape Town)',
+    grid: 'JF96',
     createdAt: '2026-11-24 08:00 UTC',
   },
 ];
@@ -97,12 +100,21 @@ function loadCallsignStore() {
       }
     }
     if (Array.isArray(parsed.registry) && parsed.registry.length > 0) {
-      callsignRegistry.splice(0, callsignRegistry.length, ...parsed.registry);
+      callsignRegistry.splice(
+        0,
+        callsignRegistry.length,
+        ...parsed.registry.map((rec) =>
+          rec.callsign === 'ZS1ROM' ? { ...rec, grid: 'JF96' } : rec
+        )
+      );
     }
     if (parsed.assignedRadios) {
       for (const [rid, ident] of Object.entries(parsed.assignedRadios)) {
         if (ident && typeof ident.callsign === 'string') {
-          assignedRadios.set(rid, ident);
+          assignedRadios.set(
+            rid,
+            ident.callsign === 'ZS1ROM' ? { ...ident, grid: 'JF96' } : ident
+          );
         }
       }
     }
@@ -128,34 +140,8 @@ loadCallsignStore();
 
 const dxClusterSpots: DxClusterSpot[] = [];
 
-const qsoLog: QsoEntry[] = [
-  {
-    id: 'seed-1',
-    timestampUtc: '2026-11-24 09:42 UTC',
-    callsign: 'DL2QRP',
-    band: '20m',
-    frequencyHz: 14_250_000,
-    mode: 'USB',
-    rstSent: '59',
-    rstRcvd: '57',
-    powerW: 10.0,
-    grid: 'JO40',
-    notes: 'Clear greyline path into Central Europe on 10W',
-  },
-  {
-    id: 'seed-2',
-    timestampUtc: '2026-11-24 08:15 UTC',
-    callsign: 'W1AW',
-    band: '20m',
-    frequencyHz: 14_246_200,
-    mode: 'CW',
-    rstSent: '599',
-    rstRcvd: '579',
-    powerW: 5.0,
-    grid: 'FN31',
-    notes: '15 WPM CW practice QSO',
-  },
-];
+// Strictly real user-logged QSOs only (zero simulated seed entries)
+const qsoLog: QsoEntry[] = [];
 
 function nowUtcLabel(): string {
   return new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
@@ -225,8 +211,16 @@ function relayToRoomPeers(
   senderId: string,
   senderStation: RemoteStation,
   payloadObj: Record<string, unknown>,
-  requireFreqAndProp = true
+  options: { requireFreqAndProp?: boolean; maxFreqDeltaHz?: number; weakSignalDigital?: boolean } | boolean = true
 ) {
+  const opts =
+    typeof options === 'boolean'
+      ? { requireFreqAndProp: options, maxFreqDeltaHz: 2200, weakSignalDigital: false }
+      : {
+          requireFreqAndProp: options.requireFreqAndProp ?? true,
+          maxFreqDeltaHz: options.maxFreqDeltaHz ?? 2200,
+          weakSignalDigital: options.weakSignalDigital ?? false,
+        };
   const payload = JSON.stringify(payloadObj);
   for (const [peerId, peer] of clients.entries()) {
     if (
@@ -236,9 +230,9 @@ function relayToRoomPeers(
     ) {
       continue;
     }
-    if (requireFreqAndProp) {
+    if (opts.requireFreqAndProp) {
       if (senderStation.band !== peer.station.band) continue;
-      if (Math.abs(senderStation.frequencyHz - peer.station.frequencyHz) > 2200) continue;
+      if (Math.abs(senderStation.frequencyHz - peer.station.frequencyHz) > opts.maxFreqDeltaHz) continue;
       const voacap = evaluateVoacapPath({
         bandId: senderStation.band,
         txQth: senderStation.qth,
@@ -246,7 +240,45 @@ function relayToRoomPeers(
         powerW: senderStation.powerW,
         conditions: sharedPropagation,
       });
-      if (!voacap.circuitOpen) continue;
+      const weakDigitalOpen = opts.weakSignalDigital && voacap.reliabilityPct >= 4;
+      if (!voacap.circuitOpen && !weakDigitalOpen) continue;
+    }
+    peer.ws.send(payload);
+  }
+}
+
+function relayBandRfActivity(
+  senderId: string,
+  senderStation: RemoteStation,
+  activity: {
+    mode: RadioMode;
+    audioOffsetHz?: number;
+    rttyShiftHz?: number;
+    durationMs: number;
+    rms?: number;
+  }
+) {
+  const payload = JSON.stringify({
+    type: 'rf:activity',
+    fromId: senderId,
+    band: senderStation.band,
+    frequencyHz: senderStation.frequencyHz,
+    mode: activity.mode,
+    powerW: senderStation.powerW,
+    qth: senderStation.qth,
+    audioOffsetHz: activity.audioOffsetHz,
+    rttyShiftHz: activity.rttyShiftHz,
+    durationMs: activity.durationMs,
+    rms: activity.rms,
+  });
+  for (const [peerId, peer] of clients.entries()) {
+    if (
+      peerId === senderId ||
+      !isSameRoom(senderStation, peer.station) ||
+      peer.station.band !== senderStation.band ||
+      peer.ws.readyState !== WebSocket.OPEN
+    ) {
+      continue;
     }
     peer.ws.send(payload);
   }
@@ -570,16 +602,23 @@ async function startServer() {
       res.status(403).json({ error: 'This callsign has been removed by net administration.' });
       return;
     }
-    const countryCode = typeof body.countryCode === 'string' ? body.countryCode.trim().toUpperCase() : 'ZA';
+    const prefixInfo = resolvePrefixCountryInfo(callsign);
+    const countryCode =
+      typeof body.countryCode === 'string' && body.countryCode.trim()
+        ? body.countryCode.trim().toUpperCase()
+        : prefixInfo?.countryCode ?? 'ZA';
     const countrySpec = getHrCountrySpec(countryCode);
+    const resolvedCountryName =
+      prefixInfo && prefixInfo.countryCode === countryCode ? prefixInfo.countryName : countrySpec.name;
     const operatorName =
       typeof body.operatorName === 'string' && body.operatorName.trim()
         ? body.operatorName.trim().slice(0, 40)
         : callsign;
+    const fallbackGrid = resolveGridForCallsign(callsign, [], callsignRegistry) || countrySpec.defaultQth.grid;
     const grid =
       typeof body.grid === 'string' && body.grid.trim()
         ? body.grid.trim().toUpperCase().slice(0, 8)
-        : countrySpec.defaultQth.grid;
+        : fallbackGrid;
 
     const existingIdx = callsignRegistry.findIndex((r) => r.callsign === callsign);
     const createdAt = nowUtcLabel();
@@ -587,8 +626,8 @@ async function startServer() {
       id: existingIdx >= 0 ? callsignRegistry[existingIdx].id : `ham-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       callsign,
       type: 'HAM',
-      countryCode: countrySpec.code,
-      countryName: countrySpec.name,
+      countryCode,
+      countryName: resolvedCountryName,
       operatorName,
       grid,
       createdAt,
@@ -601,8 +640,8 @@ async function startServer() {
         radioId,
         callsign: record.callsign,
         type: 'HAM',
-        countryCode: countrySpec.code,
-        countryName: countrySpec.name,
+        countryCode,
+        countryName: resolvedCountryName,
         grid,
         assignedAt: createdAt,
       });
@@ -611,6 +650,7 @@ async function startServer() {
 
     res.status(201).json({
       record,
+      defaultQth: prefixInfo?.qth ?? countrySpec.defaultQth,
       permanentlyAssigned: true,
       alreadyAssigned: false,
     });
@@ -914,7 +954,7 @@ async function startServer() {
       powerW: DEFAULT_TX_POWER_W,
       antennaId: 'yagi5',
       rotorHeadingDeg: 142,
-      qth: { lat: -29.8587, lon: 31.0218, grid: 'KG43' },
+      qth: { lat: -33.9249, lon: 18.4241, grid: 'JF96' },
       isTransmitting: false,
       lastActiveAt: Date.now(),
     };
@@ -971,14 +1011,20 @@ async function startServer() {
             typeof msg.rotorHeadingDeg === 'number'
               ? ((msg.rotorHeadingDeg % 360) + 360) % 360
               : conn.station.rotorHeadingDeg,
-          qth:
-            msg.qth && typeof msg.qth === 'object'
-              ? {
-                  lat: Number((msg.qth as { lat?: number }).lat ?? conn.station.qth.lat),
-                  lon: Number((msg.qth as { lon?: number }).lon ?? conn.station.qth.lon),
-                  grid: String((msg.qth as { grid?: string }).grid ?? conn.station.qth.grid).slice(0, 8),
-                }
-              : conn.station.qth,
+          qth: (() => {
+            const rawQth =
+              msg.qth && typeof msg.qth === 'object'
+                ? {
+                    lat: Number((msg.qth as { lat?: number }).lat ?? conn.station.qth.lat),
+                    lon: Number((msg.qth as { lon?: number }).lon ?? conn.station.qth.lon),
+                    grid: String((msg.qth as { grid?: string }).grid ?? conn.station.qth.grid).slice(0, 8),
+                  }
+                : conn.station.qth;
+            if (nextCall === 'ZS1ROM' && rawQth.grid.toUpperCase() === 'KG43') {
+              return { lat: -33.9249, lon: 18.4241, grid: 'JF96' };
+            }
+            return rawQth;
+          })(),
           isTransmitting:
             typeof msg.isTransmitting === 'boolean' ? msg.isTransmitting : conn.station.isTransmitting,
           cwText: typeof msg.cwText === 'string' ? msg.cwText.slice(0, 80) : conn.station.cwText,
@@ -989,12 +1035,22 @@ async function startServer() {
         broadcastAllStations();
       } else if (msgType === 'voip:audio') {
         if (typeof msg.pcm16 !== 'string' || msg.pcm16.length > 32_768) return;
+        const nowMs = Date.now();
+        if (!conn.lastRfActivityAt || nowMs - conn.lastRfActivityAt >= 220) {
+          conn.lastRfActivityAt = nowMs;
+          relayBandRfActivity(clientId, conn.station, {
+            mode: conn.station.mode,
+            durationMs: 420,
+            rms: typeof msg.rms === 'number' ? msg.rms : 0.15,
+          });
+        }
         relayToRoomPeers(clientId, conn.station, {
           type: 'voip:audio',
           fromId: clientId,
           callsign: conn.station.callsign,
           band: conn.station.band,
           frequencyHz: conn.station.frequencyHz,
+          qth: conn.station.qth,
           mode: conn.station.mode,
           sampleRate: typeof msg.sampleRate === 'number' ? msg.sampleRate : 16000,
           pcm16: msg.pcm16,
@@ -1002,12 +1058,17 @@ async function startServer() {
         });
       } else if (msgType === 'cw:tx') {
         if (typeof msg.text !== 'string') return;
+        relayBandRfActivity(clientId, conn.station, {
+          mode: 'CW',
+          durationMs: 2200,
+        });
         relayToRoomPeers(clientId, conn.station, {
           type: 'cw:tx',
           fromId: clientId,
           callsign: conn.station.callsign,
           band: conn.station.band,
           frequencyHz: conn.station.frequencyHz,
+          qth: conn.station.qth,
           wpm: typeof msg.wpm === 'number' ? msg.wpm : 15,
           text: msg.text.slice(0, 80),
         });
@@ -1015,12 +1076,22 @@ async function startServer() {
         if (typeof msg.text !== 'string') return;
         const clean = sanitizeRttyText(msg.text);
         if (!clean) return;
+        const shiftHz =
+          msg.rttyConfig && typeof (msg.rttyConfig as { shiftHz?: unknown }).shiftHz === 'number'
+            ? Number((msg.rttyConfig as { shiftHz: number }).shiftHz)
+            : 170;
+        relayBandRfActivity(clientId, conn.station, {
+          mode: 'RTTY',
+          rttyShiftHz: shiftHz,
+          durationMs: 2400,
+        });
         relayToRoomPeers(clientId, conn.station, {
           type: 'rtty:tx',
           fromId: clientId,
           callsign: conn.station.callsign,
           band: conn.station.band,
           frequencyHz: conn.station.frequencyHz,
+          qth: conn.station.qth,
           text: clean,
           rttyConfig: msg.rttyConfig && typeof msg.rttyConfig === 'object' ? msg.rttyConfig : undefined,
           timestampUtc: nowUtcLabel(),
@@ -1029,27 +1100,45 @@ async function startServer() {
         if (typeof msg.message !== 'string') return;
         const clean = sanitizeFt8Message(msg.message);
         if (!clean) return;
-        relayToRoomPeers(clientId, conn.station, {
-          type: 'ft8:tx',
-          fromId: clientId,
-          callsign: conn.station.callsign,
-          band: conn.station.band,
-          frequencyHz: conn.station.frequencyHz,
-          audioFreqHz: typeof msg.audioFreqHz === 'number' ? Math.max(200, Math.min(3000, msg.audioFreqHz)) : 1250,
-          message: clean,
-          mode: typeof msg.mode === 'string' ? msg.mode : 'FT8',
-          timestampUtc: nowUtcLabel(),
+        const audioFreqHz =
+          typeof msg.audioFreqHz === 'number' ? Math.max(200, Math.min(3000, msg.audioFreqHz)) : 1250;
+        relayBandRfActivity(clientId, conn.station, {
+          mode: 'FT8',
+          audioOffsetHz: audioFreqHz,
+          durationMs: 4400,
         });
+        relayToRoomPeers(
+          clientId,
+          conn.station,
+          {
+            type: 'ft8:tx',
+            fromId: clientId,
+            callsign: conn.station.callsign,
+            band: conn.station.band,
+            frequencyHz: conn.station.frequencyHz,
+            qth: conn.station.qth,
+            audioFreqHz,
+            message: clean,
+            mode: typeof msg.mode === 'string' ? msg.mode : 'FT8',
+            timestampUtc: nowUtcLabel(),
+          },
+          { requireFreqAndProp: true, maxFreqDeltaHz: 3000, weakSignalDigital: true }
+        );
       } else if (msgType === 'sstv:tx') {
         if (typeof msg.pixelsBase64 !== 'string' || msg.pixelsBase64.length > 65_536) return;
         const width = typeof msg.width === 'number' ? Math.min(160, Math.max(16, msg.width)) : 128;
         const height = typeof msg.height === 'number' ? Math.min(120, Math.max(16, msg.height)) : 96;
+        relayBandRfActivity(clientId, conn.station, {
+          mode: 'SSTV',
+          durationMs: 3600,
+        });
         relayToRoomPeers(clientId, conn.station, {
           type: 'sstv:tx',
           fromId: clientId,
           callsign: conn.station.callsign,
           band: conn.station.band,
           frequencyHz: conn.station.frequencyHz,
+          qth: conn.station.qth,
           sstvMode: typeof msg.sstvMode === 'string' ? msg.sstvMode : 'Robot 36',
           width,
           height,

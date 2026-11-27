@@ -347,7 +347,7 @@ export const VfoDeck: React.FC<VfoDeckProps> = ({
       </div>
 
       {/* Mode Selector Bar */}
-      <div className="grid grid-cols-5 sm:grid-cols-9 gap-1">
+      <div className="grid grid-cols-5 landscape:grid-cols-9 sm:grid-cols-9 gap-1">
         {MODES.map((m) => {
           const active = mode === m;
           return (

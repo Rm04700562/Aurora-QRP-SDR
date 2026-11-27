@@ -6,6 +6,7 @@ import {
   clampFrequencyToBand,
   computeAntennaGainDb,
   computeAntennaTakeoffBonusDb,
+  computeGreyLineTerminator,
   computeHourlyPropagationSnapshot,
   computeMufMhz,
   computePowerAmpOutput,
@@ -581,6 +582,30 @@ test('small desktop power amplifier boosts exciter output up to 500W and trips s
   assert.equal(tripped.paTripped, true);
   assert.equal(tripped.outputPowerW, tripped.exciterPowerW);
 });
+
+test('computeGreyLineTerminator returns valid non-NaN SVG geometry across UTC hours and solstices', () => {
+  const juneSolsticeUtc0 = Date.UTC(2026, 5, 21, 0, 0, 0);
+  const juneSolsticeUtc12 = Date.UTC(2026, 5, 21, 12, 0, 0);
+  const equinoxUtc6 = Date.UTC(2026, 2, 20, 6, 0, 0);
+
+  const g0 = computeGreyLineTerminator(0, juneSolsticeUtc0);
+  const g12 = computeGreyLineTerminator(12, juneSolsticeUtc12);
+  const gEq = computeGreyLineTerminator(6, equinoxUtc6);
+
+  for (const g of [g0, g12, gEq]) {
+    assert.ok(g.terminatorPathD.startsWith('M '), 'terminator path should start with SVG M command');
+    assert.ok(g.nightPolygonD.endsWith('Z'), 'night polygon should be closed');
+    assert.ok(!g.terminatorPathD.includes('NaN'), 'terminator path must not contain NaN');
+    assert.ok(!g.nightPolygonD.includes('NaN'), 'night polygon must not contain NaN');
+  }
+
+  // Sun longitude moves ~180 deg between 00:00Z and 12:00Z
+  const lonDelta = Math.abs(Math.abs(g0.subsolarLon - g12.subsolarLon) - 180);
+  assert.ok(lonDelta < 2, `Expected ~180 deg subsolar shift, got ${lonDelta}`);
+  // June solstice has positive northern declination (> 20 deg)
+  assert.ok(g0.subsolarLat > 20, `Expected northern summer declination, got ${g0.subsolarLat}`);
+});
+
 
 
 

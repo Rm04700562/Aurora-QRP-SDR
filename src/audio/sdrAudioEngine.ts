@@ -44,6 +44,11 @@ export class SdrAudioEngine {
   private noiseSource: AudioBufferSourceNode | null = null;
   private impulseGain: GainNode | null = null;
   private impulseSource: AudioBufferSourceNode | null = null;
+  private rxAnalyser: AnalyserNode | null = null;
+  private txAnalyser: AnalyserNode | null = null;
+  private micMonitorGain: GainNode | null = null;
+  private fftScratch: Float32Array | null = null;
+  private basebandBinsScratch: Float32Array = new Float32Array(96);
 
   private micStream: MediaStream | null = null;
   private micSource: MediaStreamAudioSourceNode | null = null;
@@ -126,6 +131,22 @@ export class SdrAudioEngine {
       // Dedicated TX sidetone monitor bus bypasses RX mute so CW/RTTY/FT8/SSTV TX tones are always heard cleanly
       this.sidetoneGain = this.ctx.createGain();
       this.sidetoneGain.gain.value = 0.7;
+
+      this.rxAnalyser = this.ctx.createAnalyser();
+      this.rxAnalyser.fftSize = 1024;
+      this.rxAnalyser.smoothingTimeConstant = 0.62;
+      this.rxAnalyser.minDecibels = -115;
+      this.rxAnalyser.maxDecibels = -15;
+
+      this.txAnalyser = this.ctx.createAnalyser();
+      this.txAnalyser.fftSize = 1024;
+      this.txAnalyser.smoothingTimeConstant = 0.55;
+      this.txAnalyser.minDecibels = -115;
+      this.txAnalyser.maxDecibels = -15;
+
+      this.fftScratch = new Float32Array(this.rxAnalyser.frequencyBinCount);
+
+      this.sidetoneGain.connect(this.txAnalyser);
       this.sidetoneGain.connect(this.ctx.destination);
 
       const bufferSize = this.ctx.sampleRate * 4;
@@ -175,6 +196,7 @@ export class SdrAudioEngine {
       this.impulseGain.connect(this.noiseBlankerShaper);
       this.noiseBlankerShaper.connect(this.bandpassFilter);
       this.bandpassFilter.connect(this.notchFilter);
+      this.notchFilter.connect(this.rxAnalyser);
       this.notchFilter.connect(this.masterGain);
       this.masterGain.connect(this.ctx.destination);
 
@@ -407,6 +429,12 @@ export class SdrAudioEngine {
       silent.gain.value = 0;
       this.micSilentGain = silent;
       this.micSource.connect(this.micProcessor);
+      if (this.txAnalyser) {
+        this.micMonitorGain = ctx.createGain();
+        this.micMonitorGain.gain.value = 1.0;
+        this.micSource.connect(this.micMonitorGain);
+        this.micMonitorGain.connect(this.txAnalyser);
+      }
       this.micProcessor.connect(silent);
       silent.connect(ctx.destination);
 
@@ -428,6 +456,7 @@ export class SdrAudioEngine {
       this.micProcessor.disconnect();
     }
     this.micSource?.disconnect();
+    this.micMonitorGain?.disconnect();
     this.micSilentGain?.disconnect();
     this.micStream?.getTracks().forEach((t) => {
       t.onended = null;
@@ -435,6 +464,7 @@ export class SdrAudioEngine {
     });
     this.micProcessor = null;
     this.micSource = null;
+    this.micMonitorGain = null;
     this.micSilentGain = null;
     this.micStream = null;
   }
@@ -539,6 +569,56 @@ export class SdrAudioEngine {
       mode: this.toneTelemetry.mode,
       markActive: this.toneTelemetry.markActive,
       freqHz: this.toneTelemetry.freqHz,
+    };
+  }
+
+  /**
+   * Reads live Web Audio FFT spectrum across 0..maxAudioHz (in dBFS) without allocations.
+   */
+  public getBasebandSpectrum(targetBins = 96, maxAudioHz = 3600): {
+    active: boolean;
+    isTx: boolean;
+    binsDb: Float32Array;
+    maxAudioHz: number;
+  } {
+    if (this.basebandBinsScratch.length !== targetBins) {
+      this.basebandBinsScratch = new Float32Array(targetBins);
+    }
+    const ctx = this.ctx;
+    const isTx = this.currentParams.isTransmitting;
+    const analyser = isTx ? this.txAnalyser : this.rxAnalyser;
+
+    if (!ctx || ctx.state !== 'running' || !analyser || !this.fftScratch) {
+      this.basebandBinsScratch.fill(-120);
+      return { active: false, isTx, binsDb: this.basebandBinsScratch, maxAudioHz };
+    }
+
+    if (this.fftScratch.length !== analyser.frequencyBinCount) {
+      this.fftScratch = new Float32Array(analyser.frequencyBinCount);
+    }
+    analyser.getFloatFrequencyData(this.fftScratch as Float32Array<ArrayBuffer>);
+
+    const hzPerBin = ctx.sampleRate / analyser.fftSize;
+    for (let i = 0; i < targetBins; i++) {
+      const f0 = (i / targetBins) * maxAudioHz;
+      const f1 = ((i + 1) / targetBins) * maxAudioHz;
+      const k0 = Math.max(1, Math.floor(f0 / hzPerBin));
+      const k1 = Math.min(this.fftScratch.length - 1, Math.max(k0, Math.ceil(f1 / hzPerBin)));
+      let peakDb = -120;
+      for (let k = k0; k <= k1; k++) {
+        const val = this.fftScratch[k];
+        if (Number.isFinite(val) && val > peakDb) {
+          peakDb = val;
+        }
+      }
+      this.basebandBinsScratch[i] = peakDb;
+    }
+
+    return {
+      active: true,
+      isTx,
+      binsDb: this.basebandBinsScratch,
+      maxAudioHz,
     };
   }
 

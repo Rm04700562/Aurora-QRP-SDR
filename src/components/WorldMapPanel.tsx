@@ -1,7 +1,7 @@
 import React from 'react';
 import { Globe2, LocateFixed, SlidersHorizontal } from 'lucide-react';
 import { buildWorldMapBeamPaths } from '../radio/azimuthalMap';
-import { BANDS, calculateBearingDeg, evaluateBandCondition } from '../radio/physics';
+import { BANDS, calculateBearingDeg, computeGreyLineTerminator, evaluateBandCondition } from '../radio/physics';
 import { BandId, PropagationConditions, QthLocation, RemoteStation, SignalEvaluation } from '../types/radio';
 
 interface WorldMapPanelProps {
@@ -94,9 +94,7 @@ export const WorldMapPanel: React.FC<WorldMapPanelProps> = ({
   const bandCond = evaluateBandCondition(band, propagation, qth);
   const activeBadge = ratingStyles(bandCond.rating);
 
-  // Solar terminator night shadow longitude based on UTC hour
-  const sunLon = ((((12 - propagation.utcHour) * 15) % 360) + 360) % 360;
-  const nightStartX = (sunLon + 90) % 360;
+  const greyLine = computeGreyLineTerminator(propagation.utcHour, propagation.timestampMs);
 
   // Show every connected operator (any band) plus active-band beacons (live users rendered on top)
   const visibleStations = stations
@@ -130,20 +128,27 @@ export const WorldMapPanel: React.FC<WorldMapPanelProps> = ({
           <line x1="0" y1="90" x2="360" y2="90" stroke="#152538" strokeWidth="0.7" strokeDasharray="3 3" />
           <line x1="180" y1="0" x2="180" y2="180" stroke="#152538" strokeWidth="0.7" strokeDasharray="3 3" />
 
-          {/* Night shadow band (greyline terminator visualization with wraparound) */}
-          {nightStartX + 180 <= 360 ? (
-            <rect x={nightStartX} y="0" width="180" height="180" fill="rgba(2, 6, 14, 0.45)" />
-          ) : (
-            <>
-              <rect x={nightStartX} y="0" width={360 - nightStartX} height="180" fill="rgba(2, 6, 14, 0.45)" />
-              <rect x="0" y="0" width={nightStartX + 180 - 360} height="180" fill="rgba(2, 6, 14, 0.45)" />
-            </>
-          )}
-
           {/* Landmasses */}
           {CONTINENT_PATHS.map((d, idx) => (
             <path key={idx} d={d} fill="#25364a" stroke="#3c5570" strokeWidth="0.8" />
           ))}
+
+          {/* Grey line night hemisphere shadow & twilight solar terminator */}
+          <path
+            d={greyLine.nightPolygonD}
+            fill="rgba(2, 6, 14, 0.48)"
+            pointerEvents="none"
+          />
+          <path
+            d={greyLine.terminatorPathD}
+            data-testid="worldmap-greyline-path"
+            fill="none"
+            stroke="#f59e0b"
+            strokeOpacity="0.92"
+            strokeWidth="1.2"
+            strokeLinecap="round"
+            pointerEvents="none"
+          />
 
           {/* Curved great-circle rotor beam path */}
           {beamPaths.map((d, idx) => (

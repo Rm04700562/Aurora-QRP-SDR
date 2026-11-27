@@ -2,6 +2,7 @@ import React, { useMemo } from 'react';
 import { Globe2, RefreshCw } from 'lucide-react';
 import { WORLD_CONTINENT_POLYGONS } from '../radio/azimuthalMap';
 import {
+  computeGreyLineTerminator,
   evaluateAllWorldRegions,
   evaluateVoacapCoverageFromQth,
   evaluateVoacapPath,
@@ -154,6 +155,11 @@ export const PropagationWorldMap: React.FC<PropagationWorldMapProps> = ({
     };
   }, [propagation.utcHour, propagation.timestampMs]);
 
+  const greyLine = useMemo(
+    () => computeGreyLineTerminator(propagation.utcHour, propagation.timestampMs),
+    [propagation.utcHour, propagation.timestampMs]
+  );
+
   const qthX = ((qth.lon + 180) / 360) * 360;
   const qthY = ((90 - qth.lat) / 180) * 180;
   const updatedTimeShort = propagation.lastUpdatedUtc
@@ -205,6 +211,33 @@ export const PropagationWorldMap: React.FC<PropagationWorldMapProps> = ({
           strokeLinejoin="round"
         />
       ))}
+
+      {/* Grey Line Shaded Night Hemisphere & Solar Terminator */}
+      <path
+        d={greyLine.nightPolygonD}
+        fill="#02060e"
+        fillOpacity={0.44}
+        pointerEvents="none"
+      />
+      <path
+        d={greyLine.terminatorPathD}
+        fill="none"
+        stroke="#fbbf24"
+        strokeOpacity={0.32}
+        strokeWidth={3.2}
+        strokeLinecap="round"
+        pointerEvents="none"
+      />
+      <path
+        d={greyLine.terminatorPathD}
+        data-testid="greyline-terminator-path"
+        fill="none"
+        stroke="#f59e0b"
+        strokeOpacity={0.95}
+        strokeWidth={1.25}
+        strokeLinecap="round"
+        pointerEvents="none"
+      />
 
       {/* Solar Noon Subsolar Point */}
       <circle
@@ -306,6 +339,10 @@ export const PropagationWorldMap: React.FC<PropagationWorldMapProps> = ({
                 <span>{key}</span>
               </span>
             ))}
+            <span className="flex items-center gap-1 text-amber-300">
+              <span className="w-3 h-[2px] bg-amber-400 inline-block rounded-full" aria-hidden="true" />
+              <span>Grey Line</span>
+            </span>
           </div>
           <span className="text-slate-400">
             VOACAP QTH {qth.grid} ({qth.lat.toFixed(1)}, {qth.lon.toFixed(1)}) · {propagation.sourceLabel ?? 'Hourly'}

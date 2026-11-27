@@ -43,6 +43,7 @@ import {
   SstvFramePayload,
   WorkspaceModuleTab,
 } from '../types/radio';
+import { WaterfallSignalBurst } from '../radio/waterfall';
 import { PropagationWorldMap } from './PropagationWorldMap';
 import { RttyModule } from './RttyModule';
 import { SpectrumWaterfall } from './SpectrumWaterfall';
@@ -62,13 +63,21 @@ interface CenterModeSwitcherProps {
   onSelectBand: (b: BandId) => void;
   frequencyHz: number;
   onTuneToFrequency: (hz: number, mode?: RadioMode) => void;
+  onTuneDelta?: (deltaHz: number) => void;
+  stepHz?: number;
   filterWidthKhz: number;
   rfGainPct: number;
   noiseFloorDbm: number;
+  noiseReductionPct?: number;
+  noiseBlankerPct?: number;
+  notchPct?: number;
+  ritHz?: number;
   isTransmitting: boolean;
   micRms: number;
   mode: RadioMode;
   stations: Array<{ station: RemoteStation; evalResult: SignalEvaluation }>;
+  beaconStations?: Array<{ station: RemoteStation; evalResult: SignalEvaluation }>;
+  signalBurstsRef?: React.RefObject<WaterfallSignalBurst[]>;
   allGlobalStations: RemoteStation[];
   spanKhz: number;
   onChangeSpanKhz: (khz: number) => void;
@@ -158,13 +167,21 @@ export const CenterModeSwitcher: React.FC<CenterModeSwitcherProps> = ({
   onSelectBand,
   frequencyHz,
   onTuneToFrequency,
+  onTuneDelta,
+  stepHz,
   filterWidthKhz,
   rfGainPct,
   noiseFloorDbm,
+  noiseReductionPct,
+  noiseBlankerPct,
+  notchPct,
+  ritHz,
   isTransmitting,
   micRms,
   mode,
   stations,
+  beaconStations,
+  signalBurstsRef,
   allGlobalStations,
   spanKhz,
   onChangeSpanKhz,
@@ -319,27 +336,38 @@ export const CenterModeSwitcher: React.FC<CenterModeSwitcherProps> = ({
         </span>
       </div>
 
-      {/* TAB 1: WATERFALL */}
-      {activeTab === 'waterfall' && (
+      {/* TAB 1: WATERFALL (kept mounted so waterfall history persists across tab switches) */}
+      <div className={activeTab === 'waterfall' ? 'flex flex-col flex-1 min-h-0' : 'hidden'}>
         <SpectrumWaterfall
           band={band}
           onSelectBand={onSelectBand}
           frequencyHz={frequencyHz}
           onTuneToFrequency={onTuneToFrequency}
+          onTuneDelta={onTuneDelta}
+          stepHz={stepHz}
           filterWidthKhz={filterWidthKhz}
           rfGainPct={rfGainPct}
           noiseFloorDbm={noiseFloorDbm}
+          noiseReductionPct={noiseReductionPct}
+          noiseBlankerPct={noiseBlankerPct}
+          notchPct={notchPct}
+          ritHz={ritHz}
+          rttyShiftHz={rttyConfig.shiftHz}
           isTransmitting={isTransmitting}
           micRms={micRms}
           mode={mode}
           stations={stations}
+          beaconStations={beaconStations}
+          signalBurstsRef={signalBurstsRef}
+          audioEngine={audioEngine}
           spanKhz={spanKhz}
           onChangeSpanKhz={onChangeSpanKhz}
           zoom={zoom}
           onChangeZoom={onChangeZoom}
           isPoweredOn={isPoweredOn}
+          isActive={activeTab === 'waterfall'}
         />
-      )}
+      </div>
 
       {/* TAB 2: CW MODULE */}
       {activeTab === 'cw' && (
@@ -697,7 +725,7 @@ export const CenterModeSwitcher: React.FC<CenterModeSwitcherProps> = ({
                 onSendFt8(clean, ft8AudioFreq);
               }
             }}
-            className="flex flex-wrap sm:flex-nowrap items-center gap-1"
+            className="flex flex-wrap landscape:flex-nowrap sm:flex-nowrap items-center gap-1"
           >
             <button
               type="button"
@@ -795,7 +823,7 @@ export const CenterModeSwitcher: React.FC<CenterModeSwitcherProps> = ({
       {/* TAB 6: LIVE CLUSTER */}
       {activeTab === 'cluster' && (
         <div className="flex flex-col gap-1.5 flex-1 min-h-0" data-testid="module-panel-cluster">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-1.5 flex-1 min-h-0">
+          <div className="grid grid-cols-1 landscape:grid-cols-2 md:grid-cols-2 gap-1.5 flex-1 min-h-0">
             {/* Live Online Stations Across All Rooms */}
             <div className="rounded border border-[#1c2c40] bg-[#050a11] p-1.5 flex flex-col gap-1 min-h-[100px]">
               <div className="flex items-center justify-between text-[10px] font-display font-semibold uppercase tracking-wider text-emerald-300">
@@ -888,7 +916,7 @@ export const CenterModeSwitcher: React.FC<CenterModeSwitcherProps> = ({
                 setPostingSpot(false);
               }
             }}
-            className="flex flex-wrap sm:flex-nowrap items-center gap-1.5"
+            className="flex flex-wrap landscape:flex-nowrap sm:flex-nowrap items-center gap-1.5"
           >
             <input
               type="text"

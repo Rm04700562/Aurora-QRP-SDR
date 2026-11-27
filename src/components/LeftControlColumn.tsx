@@ -139,7 +139,7 @@ export const LeftControlColumn: React.FC<LeftControlColumnProps> = ({
   const targetTip = toXY(rotorTargetDeg, 39);
 
   return (
-    <aside className="flex flex-col gap-1.5 w-full lg:w-[198px] shrink-0">
+    <aside className="flex flex-col gap-1.5 w-full landscape:w-[198px] lg:w-[198px] shrink-0">
       {/* ANTENNA SELECTOR */}
       <section className="sdr-panel rounded-md p-1.5">
         <div className="flex items-center justify-between mb-1">

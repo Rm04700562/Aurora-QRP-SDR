@@ -1,120 +1,225 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Crosshair, Maximize2 } from 'lucide-react';
+import { SdrAudioEngine } from '../audio/sdrAudioEngine';
 import { BANDS } from '../radio/physics';
+import {
+  buildWaterfallColorLut,
+  collectVisibleSignalMarkers,
+  computeNotchRfOffsetHz,
+  computePassbandOffsetsHz,
+  frequencyHzToPixelX,
+  getEffectiveSpanHz,
+  getWaterfallPlotWidth,
+  pixelXToFrequencyHz,
+  pushWaterfallSliceRow,
+  shiftWaterfallBufferHorizontal,
+  synthesizeSpectrumSlice,
+  WATERFALL_BINS,
+  WATERFALL_PLOT_LEFT,
+  WATERFALL_PLOT_RIGHT,
+  WaterfallPaletteId,
+  WaterfallSignalBurst,
+} from '../radio/waterfall';
 import { BandId, RadioMode, RemoteStation, SignalEvaluation } from '../types/radio';
+import { computeWheelStepDirection } from '../utils/browserCompat';
 
 interface SpectrumWaterfallProps {
   band: BandId;
   onSelectBand: (b: BandId) => void;
   frequencyHz: number;
   onTuneToFrequency: (hz: number, mode?: RadioMode) => void;
+  onTuneDelta?: (deltaHz: number) => void;
+  stepHz?: number;
   filterWidthKhz: number;
   rfGainPct: number;
   noiseFloorDbm: number;
+  noiseReductionPct?: number;
+  noiseBlankerPct?: number;
+  notchPct?: number;
+  ritHz?: number;
+  rttyShiftHz?: number;
   isTransmitting: boolean;
   micRms: number;
   mode: RadioMode;
   stations: Array<{ station: RemoteStation; evalResult: SignalEvaluation }>;
+  beaconStations?: Array<{ station: RemoteStation; evalResult: SignalEvaluation }>;
+  signalBurstsRef?: React.RefObject<WaterfallSignalBurst[]>;
+  audioEngine?: SdrAudioEngine | null;
   spanKhz: number;
   onChangeSpanKhz: (khz: number) => void;
   zoom: number;
   onChangeZoom: (z: number) => void;
   isPoweredOn?: boolean;
+  isActive?: boolean;
 }
 
-function thermalColor(norm: number): [number, number, number] {
-  const t = Math.max(0, Math.min(1, norm));
-  if (t < 0.25) {
-    const k = t / 0.25;
-    return [4 + k * 8, 12 + k * 40, 42 + k * 110];
-  }
-  if (t < 0.52) {
-    const k = (t - 0.25) / 0.27;
-    return [12 + k * 20, 52 + k * 150, 152 + k * 90];
-  }
-  if (t < 0.78) {
-    const k = (t - 0.52) / 0.26;
-    return [32 + k * 218, 202 + k * 45, 242 - k * 180];
-  }
-  const k = (t - 0.78) / 0.22;
-  return [250, 247 - k * 165, 62 - k * 45];
-}
-
-function modeSpectralShape(distHz: number, mode: RadioMode, timeNow: number, baseFreq: number): number {
-  if (mode === 'CW') {
-    return distHz < 380 ? Math.exp(-Math.pow(distHz / 110, 2)) : 0;
-  }
-  if (mode === 'RTTY') {
-    // Classic twin-peak 170 Hz shift FSK lobes
-    const markDist = Math.abs(distHz - 85);
-    const spaceDist = Math.abs(distHz + 85);
-    const markAmp = 0.75 + 0.25 * Math.sin(timeNow * 0.045 + baseFreq);
-    const spaceAmp = 0.75 + 0.25 * Math.cos(timeNow * 0.045 + baseFreq);
-    return Math.max(
-      markDist < 190 ? markAmp * Math.exp(-Math.pow(markDist / 60, 2)) : 0,
-      spaceDist < 190 ? spaceAmp * Math.exp(-Math.pow(spaceDist / 60, 2)) : 0
-    );
-  }
-  if (mode === 'FT8' || mode === 'DIGITAL') {
-    return distHz < 180 ? Math.exp(-Math.pow(distHz / 45, 2)) : 0;
-  }
-  if (mode === 'SSTV') {
-    return distHz < 2200 ? Math.exp(-Math.pow(distHz / 980, 2)) * (0.8 + 0.2 * Math.sin(timeNow * 0.03)) : 0;
-  }
-  const bwHz = mode === 'FM' ? 6000 : 2400;
-  return distHz < bwHz * 1.35 ? Math.exp(-Math.pow(distHz / (bwHz * 0.45), 2)) : 0;
-}
+const PALETTE_ORDER: WaterfallPaletteId[] = ['aurora', 'thermal', 'phosphor'];
+const PALETTE_LABELS: Record<WaterfallPaletteId, string> = {
+  aurora: 'AUR',
+  thermal: 'THM',
+  phosphor: 'PHOS',
+};
 
 export const SpectrumWaterfall: React.FC<SpectrumWaterfallProps> = ({
   band,
   onSelectBand,
   frequencyHz,
   onTuneToFrequency,
+  onTuneDelta,
+  stepHz = 100,
   filterWidthKhz,
   rfGainPct,
   noiseFloorDbm,
+  noiseReductionPct = 48,
+  noiseBlankerPct = 0,
+  notchPct = 0,
+  ritHz = 0,
+  rttyShiftHz = 170,
   isTransmitting,
   micRms,
   mode,
   stations,
+  beaconStations = [],
+  signalBurstsRef,
+  audioEngine = null,
   spanKhz,
   onChangeSpanKhz,
   zoom,
   onChangeZoom,
   isPoweredOn = true,
+  isActive = true,
 }) => {
   const scopeCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const waterfallCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  // Strictly real connected users ONLY (no simulated propagation beacons on waterfall)
+  const [palette, setPalette] = useState<WaterfallPaletteId>('aurora');
+  const [peakHoldEnabled, setPeakHoldEnabled] = useState<boolean>(true);
+  const [showBeacons, setShowBeacons] = useState<boolean>(true);
+
+  const lutRef = useRef<Uint8ClampedArray>(buildWaterfallColorLut('aurora'));
+  useEffect(() => {
+    lutRef.current = buildWaterfallColorLut(palette);
+  }, [palette]);
+
+  // Persistent waterfall RGBA history & scope traces survive tab switches seamlessly
+  const wfBufRef = useRef<Uint8ClampedArray | null>(null);
+  const wfImgRef = useRef<ImageData | null>(null);
+  const smoothedRef = useRef<Float32Array>(new Float32Array(WATERFALL_BINS).fill(-124));
+  const peakHoldRef = useRef<Float32Array>(new Float32Array(WATERFALL_BINS).fill(-124));
+  const prevViewRef = useRef<{
+    band: BandId;
+    frequencyHz: number;
+    spanKhz: number;
+    zoom: number;
+  }>({ band, frequencyHz, spanKhz, zoom });
+
+  const hoverRef = useRef<{ active: boolean; canvasX: number; canvasY: number }>({
+    active: false,
+    canvasX: 0,
+    canvasY: 0,
+  });
+
+  const dragRef = useRef<{
+    active: boolean;
+    pointerId: number;
+    startClientX: number;
+    startFreqHz: number;
+    rectWidth: number;
+    didDrag: boolean;
+  }>({
+    active: false,
+    pointerId: -1,
+    startClientX: 0,
+    startFreqHz: frequencyHz,
+    rectWidth: 680,
+    didDrag: false,
+  });
+
+  // Strictly real connected users in stations list; beacons stay isolated for scope/waterfall only
   const realUsers = stations.filter((s) => !s.station.isBeacon);
 
   const stateRef = useRef({
+    band,
     frequencyHz,
     filterWidthKhz,
     rfGainPct,
     noiseFloorDbm,
+    noiseReductionPct,
+    noiseBlankerPct,
+    notchPct,
+    ritHz,
+    rttyShiftHz,
     isTransmitting,
     micRms,
     mode,
     stations: realUsers,
+    beaconStations,
+    showBeacons,
     spanKhz,
     zoom,
     isPoweredOn,
+    isActive,
+    peakHoldEnabled,
+    stepHz,
+    audioEngine,
+    onTuneToFrequency,
+    onTuneDelta,
   });
   stateRef.current = {
+    band,
     frequencyHz,
     filterWidthKhz,
     rfGainPct,
     noiseFloorDbm,
+    noiseReductionPct,
+    noiseBlankerPct,
+    notchPct,
+    ritHz,
+    rttyShiftHz,
     isTransmitting,
     micRms,
     mode,
     stations: realUsers,
+    beaconStations,
+    showBeacons,
     spanKhz,
     zoom,
     isPoweredOn,
+    isActive,
+    peakHoldEnabled,
+    stepHz,
+    audioEngine,
+    onTuneToFrequency,
+    onTuneDelta,
   };
+
+  // Attach native non-passive wheel listeners so Mac/Windows/Linux wheel/trackpad scrolling tunes cleanly without page scroll
+  useEffect(() => {
+    const scopeEl = scopeCanvasRef.current;
+    const wfEl = waterfallCanvasRef.current;
+    if (!scopeEl || !wfEl) return;
+
+    const handleWheel = (e: WheelEvent) => {
+      const s = stateRef.current;
+      if (!s.isPoweredOn) return;
+      const dir = computeWheelStepDirection(e.deltaY, e.deltaMode);
+      if (dir === 0) return;
+      e.preventDefault();
+      const tuneStep = e.shiftKey ? 10 : Math.max(10, s.stepHz);
+      if (s.onTuneDelta) {
+        s.onTuneDelta(dir * tuneStep);
+      } else {
+        s.onTuneToFrequency(s.frequencyHz + dir * tuneStep);
+      }
+    };
+
+    scopeEl.addEventListener('wheel', handleWheel, { passive: false });
+    wfEl.addEventListener('wheel', handleWheel, { passive: false });
+    return () => {
+      scopeEl.removeEventListener('wheel', handleWheel);
+      wfEl.removeEventListener('wheel', handleWheel);
+    };
+  }, []);
 
   useEffect(() => {
     let rafId = 0;
@@ -122,84 +227,136 @@ export const SpectrumWaterfall: React.FC<SpectrumWaterfallProps> = ({
 
     const renderFrame = (now: number) => {
       rafId = requestAnimationFrame(renderFrame);
-      if (now - lastTick < 95) return;
+      const s = stateRef.current;
+      const frameIntervalMs = s.isActive ? 72 : 240;
+      if (now - lastTick < frameIntervalMs) return;
       lastTick = now;
 
-      const s = stateRef.current;
       const scopeCanvas = scopeCanvasRef.current;
       const wfCanvas = waterfallCanvasRef.current;
       if (!scopeCanvas || !wfCanvas) return;
-
-      const sCtx = scopeCanvas.getContext('2d');
-      const wCtx = wfCanvas.getContext('2d', { willReadFrequently: true });
-      if (!sCtx || !wCtx) return;
 
       const W = scopeCanvas.width;
       const H = scopeCanvas.height;
       const WH = wfCanvas.height;
 
+      if (!wfBufRef.current || wfBufRef.current.length !== W * WH * 4) {
+        wfBufRef.current = new Uint8ClampedArray(W * WH * 4);
+        for (let i = 0; i < wfBufRef.current.length; i += 4) {
+          wfBufRef.current[i] = 6;
+          wfBufRef.current[i + 1] = 12;
+          wfBufRef.current[i + 2] = 24;
+          wfBufRef.current[i + 3] = 255;
+        }
+        wfImgRef.current = null;
+      }
+
+      const sCtx = scopeCanvas.getContext('2d');
+      const wCtx = wfCanvas.getContext('2d');
+      if (!sCtx || !wCtx) return;
+
       if (!s.isPoweredOn) {
-        sCtx.fillStyle = '#03060c';
-        sCtx.fillRect(0, 0, W, H);
-        sCtx.font = '11px "JetBrains Mono", monospace';
-        sCtx.fillStyle = '#475569';
-        sCtx.textAlign = 'center';
-        sCtx.fillText('TRANSCEIVER POWERED OFF · PRESS ON/OFF TO START', W / 2, H / 2 + 4);
-        sCtx.textAlign = 'start';
-        wCtx.fillStyle = '#03060c';
-        wCtx.fillRect(0, 0, W, WH);
+        if (s.isActive) {
+          sCtx.fillStyle = '#03060c';
+          sCtx.fillRect(0, 0, W, H);
+          sCtx.font = '11px "JetBrains Mono", monospace';
+          sCtx.fillStyle = '#475569';
+          sCtx.textAlign = 'center';
+          sCtx.fillText('TRANSCEIVER POWERED OFF · PRESS ON/OFF TO START', W / 2, H / 2 + 4);
+          sCtx.textAlign = 'start';
+          wCtx.fillStyle = '#03060c';
+          wCtx.fillRect(0, 0, W, WH);
+        }
         return;
       }
 
-      const effectiveSpanHz = (s.spanKhz * 1000) / s.zoom;
+      // Track band/span/zoom/frequency changes so existing waterfall trails shift cleanly with VFO tuning
+      const prev = prevViewRef.current;
+      const effectiveSpanHz = getEffectiveSpanHz(s.spanKhz, s.zoom);
+      const plotWidth = getWaterfallPlotWidth(W);
+      if (prev.band !== s.band || prev.spanKhz !== s.spanKhz || prev.zoom !== s.zoom) {
+        for (let i = 0; i < wfBufRef.current.length; i += 4) {
+          wfBufRef.current[i] = 6;
+          wfBufRef.current[i + 1] = 12;
+          wfBufRef.current[i + 2] = 24;
+          wfBufRef.current[i + 3] = 255;
+        }
+        smoothedRef.current.fill(s.noiseFloorDbm);
+        peakHoldRef.current.fill(s.noiseFloorDbm);
+      } else if (prev.frequencyHz !== s.frequencyHz) {
+        const deltaFreqHz = prev.frequencyHz - s.frequencyHz;
+        const shiftPx = Math.round((deltaFreqHz / effectiveSpanHz) * plotWidth);
+        if (shiftPx !== 0) {
+          shiftWaterfallBufferHorizontal(wfBufRef.current, W, WH, shiftPx);
+          peakHoldRef.current.fill(s.noiseFloorDbm);
+        }
+      }
+      prevViewRef.current = {
+        band: s.band,
+        frequencyHz: s.frequencyHz,
+        spanKhz: s.spanKhz,
+        zoom: s.zoom,
+      };
+
       const minFreq = s.frequencyHz - effectiveSpanHz / 2;
-      const maxFreq = s.frequencyHz + effectiveSpanHz / 2;
+      const nowEpochMs = Date.now();
+      const toneTel = s.audioEngine?.getToneTelemetry();
+      const basebandFft = s.audioEngine?.getBasebandSpectrum(96, 3600) ?? null;
 
-      const bins = 240;
-      const spectrumDbm = new Float32Array(bins);
-      const baseFloor = s.noiseFloorDbm + (s.rfGainPct - 50) * 0.14;
+      const rawSlice = synthesizeSpectrumSlice({
+        bins: WATERFALL_BINS,
+        centerFreqHz: s.frequencyHz,
+        spanKhz: s.spanKhz,
+        zoom: s.zoom,
+        mode: s.mode,
+        band: s.band,
+        filterWidthKhz: s.filterWidthKhz,
+        rfGainPct: s.rfGainPct,
+        noiseFloorDbm: s.noiseFloorDbm,
+        noiseReductionPct: s.noiseReductionPct,
+        noiseBlankerPct: s.noiseBlankerPct,
+        notchPct: s.notchPct,
+        isTransmitting: s.isTransmitting,
+        micRms: s.micRms,
+        nowMs: nowEpochMs,
+        stations: s.stations,
+        beacons: s.beaconStations,
+        showBeacons: s.showBeacons,
+        bursts: signalBurstsRef?.current,
+        toneTelemetry: toneTel,
+        rttyShiftHz: s.rttyShiftHz,
+        basebandFft,
+      });
 
-      for (let i = 0; i < bins; i++) {
-        const binFreq = minFreq + (i / (bins - 1)) * effectiveSpanHz;
-        let dbm = baseFloor + (Math.random() - 0.5) * 5.2;
+      const smoothed = smoothedRef.current;
+      const peakHold = peakHoldRef.current;
+      for (let i = 0; i < WATERFALL_BINS; i++) {
+        const val = rawSlice[i];
+        // Fast attack, smooth decay for crisp readable trace
+        const prevS = smoothed[i];
+        smoothed[i] = val > prevS ? prevS * 0.35 + val * 0.65 : prevS * 0.62 + val * 0.38;
 
-        // Plot ONLY real connected users transmitting on air whose VOACAP propagation circuit is open
-        for (const item of s.stations) {
-          if (!item.station.isTransmitting || !item.evalResult.propagationOpen) continue;
-          const distHz = Math.abs(binFreq - item.station.frequencyHz);
-          const shape = modeSpectralShape(distHz, item.station.mode, now, item.station.frequencyHz);
-          if (shape > 0.01) {
-            const pulse = 0.92 + 0.08 * Math.sin(now * 0.015);
-            const sigPeak = item.evalResult.rxPowerDbm * pulse;
-            if (sigPeak > dbm) {
-              dbm = dbm + (sigPeak - dbm) * shape;
-            }
-          }
-        }
-
-        // Plot own active TX RF carrier
-        if (s.isTransmitting) {
-          const distHz = Math.abs(binFreq - s.frequencyHz);
-          const shape = modeSpectralShape(distHz, s.mode, now, s.frequencyHz);
-          if (shape > 0.01) {
-            const txLevel = -24 + Math.min(10, s.micRms * 42) + (Math.random() - 0.5) * 2.5;
-            dbm = Math.max(dbm, baseFloor + (txLevel - baseFloor) * shape);
-          }
-        }
-
-        spectrumDbm[i] = Math.max(-140, Math.min(-18, dbm));
+        const prevP = peakHold[i];
+        peakHold[i] = Math.max(smoothed[i], prevP - 0.32);
       }
 
+      const baseFloor = s.noiseFloorDbm + (s.rfGainPct - 50) * 0.16;
+      pushWaterfallSliceRow(wfBufRef.current, W, WH, rawSlice, baseFloor, lutRef.current);
+
+      // Skip painting visible canvas frames if currently hidden on another tab (buffer kept ticking cleanly!)
+      if (!s.isActive) return;
+
+      // 1. Draw Spectrum Scope
       sCtx.clearRect(0, 0, W, H);
       const bgGrad = sCtx.createLinearGradient(0, 0, 0, H);
-      bgGrad.addColorStop(0, '#050b14');
-      bgGrad.addColorStop(1, '#081322');
+      bgGrad.addColorStop(0, '#040a13');
+      bgGrad.addColorStop(1, '#081424');
       sCtx.fillStyle = bgGrad;
       sCtx.fillRect(0, 0, W, H);
 
       const dbmToY = (dbm: number) => {
-        const norm = (dbm - -140) / (-18 - -140);
-        return H - 18 - Math.max(0, Math.min(1, norm)) * (H - 28);
+        const norm = (dbm - -140) / (-16 - -140);
+        return H - 17 - Math.max(0, Math.min(1, norm)) * (H - 27);
       };
 
       sCtx.strokeStyle = 'rgba(56, 94, 138, 0.28)';
@@ -209,114 +366,296 @@ export const SpectrumWaterfall: React.FC<SpectrumWaterfallProps> = ({
       for (const db of [-20, -40, -60, -80, -100, -120, -140]) {
         const y = dbmToY(db);
         sCtx.beginPath();
-        sCtx.moveTo(36, y);
-        sCtx.lineTo(W, y);
+        sCtx.moveTo(WATERFALL_PLOT_LEFT, y);
+        sCtx.lineTo(W - WATERFALL_PLOT_RIGHT, y);
         sCtx.stroke();
-        sCtx.fillText(`${db}`, 6, y + 3);
+        sCtx.fillText(`${db}`, 5, y + 3);
       }
 
       const tickCount = 6;
       for (let t = 1; t < tickCount; t++) {
         const frac = t / tickCount;
-        const x = 36 + frac * (W - 44);
+        const x = WATERFALL_PLOT_LEFT + frac * plotWidth;
         const fMhz = (minFreq + frac * effectiveSpanHz) / 1_000_000;
         sCtx.strokeStyle = 'rgba(56, 94, 138, 0.22)';
         sCtx.beginPath();
         sCtx.moveTo(x, 8);
-        sCtx.lineTo(x, H - 16);
+        sCtx.lineTo(x, H - 15);
         sCtx.stroke();
         sCtx.fillStyle = '#8faac7';
-        sCtx.fillText(fMhz.toFixed(3), x - 18, H - 4);
+        sCtx.fillText(fMhz.toFixed(3), x - 18, H - 3);
       }
 
-      const centerX = 36 + 0.5 * (W - 44);
-      const passbandPx = Math.max(6, ((s.filterWidthKhz * 1000) / effectiveSpanHz) * (W - 44));
-      sCtx.fillStyle = s.isTransmitting ? 'rgba(244, 63, 94, 0.18)' : 'rgba(34, 184, 255, 0.16)';
-      sCtx.fillRect(centerX - passbandPx / 2, 8, passbandPx, H - 24);
+      // Passband filter skirt shading (asymmetric for USB/LSB/FT8/SSTV, symmetric for CW/RTTY/AM/FM)
+      const pb = computePassbandOffsetsHz(s.mode, s.filterWidthKhz);
+      const pbLeftX = Math.max(
+        WATERFALL_PLOT_LEFT,
+        frequencyHzToPixelX(s.frequencyHz + pb.lowHz, W, s.frequencyHz, s.spanKhz, s.zoom)
+      );
+      const pbRightX = Math.min(
+        W - WATERFALL_PLOT_RIGHT,
+        frequencyHzToPixelX(s.frequencyHz + pb.highHz, W, s.frequencyHz, s.spanKhz, s.zoom)
+      );
+      const pbDrawWidth = Math.max(4, pbRightX - pbLeftX);
+      const pbDrawX = pbRightX - pbLeftX < 4 ? (pbLeftX + pbRightX) / 2 - 2 : pbLeftX;
 
+      sCtx.fillStyle = s.isTransmitting ? 'rgba(244, 63, 94, 0.18)' : 'rgba(34, 184, 255, 0.15)';
+      sCtx.fillRect(pbDrawX, 8, pbDrawWidth, H - 23);
+
+      // Center VFO hairline
+      const centerX = WATERFALL_PLOT_LEFT + 0.5 * plotWidth;
       sCtx.strokeStyle = s.isTransmitting ? '#fb7185' : '#38bdf8';
       sCtx.lineWidth = 1.5;
       sCtx.beginPath();
       sCtx.moveTo(centerX, 8);
-      sCtx.lineTo(centerX, H - 16);
+      sCtx.lineTo(centerX, H - 15);
       sCtx.stroke();
 
+      // Optional Notch filter marker inside passband
+      const notchOffsetHz = computeNotchRfOffsetHz(s.notchPct, s.mode);
+      if (notchOffsetHz !== null) {
+        const nx = frequencyHzToPixelX(s.frequencyHz + notchOffsetHz, W, s.frequencyHz, s.spanKhz, s.zoom);
+        if (nx >= WATERFALL_PLOT_LEFT && nx <= W - WATERFALL_PLOT_RIGHT) {
+          sCtx.strokeStyle = 'rgba(245, 158, 11, 0.75)';
+          sCtx.lineWidth = 1;
+          sCtx.setLineDash([2, 2]);
+          sCtx.beginPath();
+          sCtx.moveTo(nx, 10);
+          sCtx.lineTo(nx, H - 16);
+          sCtx.stroke();
+          sCtx.setLineDash([]);
+        }
+      }
+
+      // Peak-Hold trace
+      if (s.peakHoldEnabled) {
+        sCtx.beginPath();
+        for (let i = 0; i < WATERFALL_BINS; i++) {
+          const x = WATERFALL_PLOT_LEFT + (i / (WATERFALL_BINS - 1)) * plotWidth;
+          const y = dbmToY(peakHold[i]);
+          if (i === 0) sCtx.moveTo(x, y);
+          else sCtx.lineTo(x, y);
+        }
+        sCtx.strokeStyle = 'rgba(56, 189, 248, 0.45)';
+        sCtx.lineWidth = 1;
+        sCtx.stroke();
+      }
+
+      // Primary Smoothed Spectrum Trace + Gradient Fill
       sCtx.beginPath();
-      for (let i = 0; i < bins; i++) {
-        const x = 36 + (i / (bins - 1)) * (W - 44);
-        const y = dbmToY(spectrumDbm[i]);
+      for (let i = 0; i < WATERFALL_BINS; i++) {
+        const x = WATERFALL_PLOT_LEFT + (i / (WATERFALL_BINS - 1)) * plotWidth;
+        const y = dbmToY(smoothed[i]);
         if (i === 0) sCtx.moveTo(x, y);
         else sCtx.lineTo(x, y);
       }
-      const traceGrad = sCtx.createLinearGradient(0, 10, 0, H - 16);
-      traceGrad.addColorStop(0, 'rgba(56, 189, 248, 0.45)');
+      const traceGrad = sCtx.createLinearGradient(0, 10, 0, H - 15);
+      traceGrad.addColorStop(0, s.isTransmitting ? 'rgba(251, 113, 133, 0.48)' : 'rgba(56, 189, 248, 0.46)');
       traceGrad.addColorStop(1, 'rgba(14, 165, 233, 0.04)');
-      sCtx.strokeStyle = '#bae6fd';
+      sCtx.strokeStyle = s.isTransmitting ? '#fecdd3' : '#e0f2fe';
       sCtx.lineWidth = 1.5;
       sCtx.stroke();
 
-      sCtx.lineTo(W - 8, H - 16);
-      sCtx.lineTo(36, H - 16);
+      sCtx.lineTo(W - WATERFALL_PLOT_RIGHT, H - 15);
+      sCtx.lineTo(WATERFALL_PLOT_LEFT, H - 15);
       sCtx.closePath();
       sCtx.fillStyle = traceGrad;
       sCtx.fill();
 
-      // Callsign labels for real transmitting users with open propagation
-      sCtx.font = '10px "JetBrains Mono", monospace';
-      for (const item of s.stations) {
-        if (!item.station.isTransmitting || !item.evalResult.propagationOpen) continue;
-        if (item.station.frequencyHz < minFreq || item.station.frequencyHz > maxFreq) continue;
-        const frac = (item.station.frequencyHz - minFreq) / effectiveSpanHz;
-        const x = 36 + frac * (W - 44);
-        const y = Math.max(18, dbmToY(item.evalResult.rxPowerDbm) - 8);
-        sCtx.fillStyle = '#34d399';
-        sCtx.fillText(item.station.callsign, Math.max(40, Math.min(W - 65, x - 22)), y);
+      // Incoming signal pip markers along top of spectrum plot (emerald = live peer, cyan = beacon; NO callsigns)
+      const signalMarkers = collectVisibleSignalMarkers({
+        centerFreqHz: s.frequencyHz,
+        spanKhz: s.spanKhz,
+        zoom: s.zoom,
+        canvasWidth: W,
+        band: s.band,
+        nowMs: nowEpochMs,
+        stations: s.stations,
+        bursts: signalBurstsRef?.current,
+        beacons: s.beaconStations,
+        showBeacons: s.showBeacons,
+      });
+      for (const mk of signalMarkers) {
+        sCtx.fillStyle = mk.kind === 'live' ? '#34d399' : '#38bdf8';
+        sCtx.beginPath();
+        sCtx.moveTo(mk.x, 12);
+        sCtx.lineTo(mk.x - 3.5, 6);
+        sCtx.lineTo(mk.x + 3.5, 6);
+        sCtx.closePath();
+        sCtx.fill();
       }
 
-      // Waterfall scroll down 1px per tick via ImageData copy (Safari/WebKit Metal 2D safe)
-      if (WH > 1) {
-        const prevImg = wCtx.getImageData(0, 0, W, WH - 1);
-        wCtx.putImageData(prevImg, 0, 1);
+      // Top-left RF status readout & top-right Hover Crosshair Frequency/dBm HUD (no callsigns)
+      sCtx.font = '9.5px "JetBrains Mono", monospace';
+      sCtx.fillStyle = s.isTransmitting ? '#fda4af' : '#7dd3fc';
+      const statusText = `${s.isTransmitting ? 'TX' : 'RX'} ${s.mode} · BW ${s.filterWidthKhz.toFixed(1)}k${
+        s.ritHz !== 0 ? ` · RIT ${s.ritHz > 0 ? '+' : ''}${s.ritHz}` : ''
+      }`;
+      sCtx.fillText(statusText, WATERFALL_PLOT_LEFT + 6, 14);
+
+      if (hoverRef.current.active) {
+        const hx = Math.max(WATERFALL_PLOT_LEFT, Math.min(W - WATERFALL_PLOT_RIGHT, hoverRef.current.canvasX));
+        const hoverNorm = (hx - WATERFALL_PLOT_LEFT) / plotWidth;
+        const hoverFreqHz = Math.round(minFreq + hoverNorm * effectiveSpanHz);
+        const hoverBin = Math.min(WATERFALL_BINS - 1, Math.max(0, Math.round(hoverNorm * (WATERFALL_BINS - 1))));
+        const hoverDbm = smoothed[hoverBin];
+
+        sCtx.strokeStyle = 'rgba(251, 191, 36, 0.72)';
+        sCtx.lineWidth = 1;
+        sCtx.setLineDash([3, 3]);
+        sCtx.beginPath();
+        sCtx.moveTo(hx, 8);
+        sCtx.lineTo(hx, H - 15);
+        sCtx.stroke();
+        sCtx.setLineDash([]);
+
+        const readout = `${(hoverFreqHz / 1_000_000).toFixed(4)} MHz · ${hoverDbm.toFixed(0)} dBm`;
+        sCtx.textAlign = 'right';
+        sCtx.fillStyle = '#fde68a';
+        sCtx.fillText(readout, W - WATERFALL_PLOT_RIGHT - 6, 14);
+        sCtx.textAlign = 'start';
       }
-      const rowImg = wCtx.createImageData(W, 1);
-      for (let px = 0; px < W; px++) {
-        const idxNorm = px < 36 ? 0 : Math.min(1, Math.max(0, (px - 36) / (W - 44)));
-        const binIdx = Math.min(bins - 1, Math.floor(idxNorm * (bins - 1)));
-        const dbm = spectrumDbm[binIdx];
-        const norm = (dbm - -132) / (-45 - -132);
-        const [r, g, b] = px < 36 ? [6, 12, 24] : thermalColor(norm);
-        const offset = px * 4;
-        rowImg.data[offset] = r;
-        rowImg.data[offset + 1] = g;
-        rowImg.data[offset + 2] = b;
-        rowImg.data[offset + 3] = 255;
+
+      // 2. Draw Waterfall Canvas directly from persistent RGBA buffer (no getImageData readback stall)
+      if (!wfImgRef.current) {
+        wfImgRef.current = new ImageData(W, WH);
       }
-      wCtx.putImageData(rowImg, 0, 0);
+      wfImgRef.current.data.set(wfBufRef.current);
+      wCtx.putImageData(wfImgRef.current, 0, 0);
+
+      // Left gutter vertical color scale legend (aligned with dBm axis)
+      for (let py = 6; py < WH - 6; py++) {
+        const t = 1 - (py - 6) / Math.max(1, WH - 12);
+        const lutOff = Math.min(255, Math.max(0, Math.round(t * 255))) * 3;
+        wCtx.fillStyle = `rgb(${lutRef.current[lutOff]},${lutRef.current[lutOff + 1]},${lutRef.current[lutOff + 2]})`;
+        wCtx.fillRect(10, py, 6, 1);
+      }
+      wCtx.font = '8.5px "JetBrains Mono", monospace';
+      wCtx.fillStyle = '#64748b';
+      wCtx.fillText('HI', 19, 13);
+      wCtx.fillText('LO', 19, WH - 6);
+
+      // Overlay passband boundary guides + VFO hairline on Waterfall canvas
+      wCtx.strokeStyle = s.isTransmitting ? 'rgba(251, 113, 133, 0.45)' : 'rgba(56, 189, 248, 0.35)';
+      wCtx.lineWidth = 1;
+      wCtx.setLineDash([2, 3]);
+      wCtx.beginPath();
+      wCtx.moveTo(pbDrawX, 0);
+      wCtx.lineTo(pbDrawX, WH);
+      wCtx.moveTo(pbDrawX + pbDrawWidth, 0);
+      wCtx.lineTo(pbDrawX + pbDrawWidth, WH);
+      wCtx.stroke();
+      wCtx.setLineDash([]);
+
+      wCtx.strokeStyle = s.isTransmitting ? 'rgba(251, 113, 133, 0.85)' : 'rgba(56, 189, 248, 0.78)';
+      wCtx.lineWidth = 1.25;
+      wCtx.beginPath();
+      wCtx.moveTo(centerX, 0);
+      wCtx.lineTo(centerX, WH);
+      wCtx.stroke();
+
+      if (hoverRef.current.active) {
+        const hx = Math.max(WATERFALL_PLOT_LEFT, Math.min(W - WATERFALL_PLOT_RIGHT, hoverRef.current.canvasX));
+        wCtx.strokeStyle = 'rgba(251, 191, 36, 0.72)';
+        wCtx.lineWidth = 1;
+        wCtx.setLineDash([3, 3]);
+        wCtx.beginPath();
+        wCtx.moveTo(hx, 0);
+        wCtx.lineTo(hx, WH);
+        wCtx.stroke();
+        wCtx.setLineDash([]);
+      }
     };
 
     rafId = requestAnimationFrame(renderFrame);
     return () => cancelAnimationFrame(rafId);
-  }, []);
+  }, [signalBurstsRef]);
 
-  const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const updateHoverCoords = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
-    const relX = (e.clientX - rect.left) / rect.width;
-    const effectiveSpanHz = (spanKhz * 1000) / zoom;
-    const minFreq = frequencyHz - effectiveSpanHz / 2;
-    const clickedHz = Math.round(minFreq + relX * effectiveSpanHz);
-    onTuneToFrequency(clickedHz);
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const canvasX = ((e.clientX - rect.left) / rect.width) * e.currentTarget.width;
+    const canvasY = ((e.clientY - rect.top) / rect.height) * e.currentTarget.height;
+    hoverRef.current = { active: true, canvasX, canvasY };
   };
 
-  const realUsersOnBand = realUsers.filter((s) => s.station.band === band);
+  const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (e.button !== 0) return;
+    if (isPoweredOn) {
+      void audioEngine?.resumeIfNeeded();
+    }
+    const rect = e.currentTarget.getBoundingClientRect();
+    updateHoverCoords(e);
+    dragRef.current = {
+      active: true,
+      pointerId: e.pointerId,
+      startClientX: e.clientX,
+      startFreqHz: frequencyHz,
+      rectWidth: rect.width,
+      didDrag: false,
+    };
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // Ignore synthetic event environments lacking active pointer capture
+    }
+  };
+
+  const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    updateHoverCoords(e);
+    const drag = dragRef.current;
+    if (!drag.active || drag.pointerId !== e.pointerId) return;
+    const dx = e.clientX - drag.startClientX;
+    if (!drag.didDrag && Math.abs(dx) < 4) return;
+    drag.didDrag = true;
+
+    const plotCssWidth =
+      drag.rectWidth * (getWaterfallPlotWidth(e.currentTarget.width) / e.currentTarget.width);
+    const effectiveSpanHz = getEffectiveSpanHz(spanKhz, zoom);
+    const deltaHz = -Math.round((dx / Math.max(1, plotCssWidth)) * effectiveSpanHz);
+    onTuneToFrequency(drag.startFreqHz + deltaHz);
+  };
+
+  const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const drag = dragRef.current;
+    if (!drag.active || drag.pointerId !== e.pointerId) return;
+    drag.active = false;
+    try {
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+    } catch {
+      // Ignore if already released
+    }
+
+    if (!drag.didDrag) {
+      const rect = e.currentTarget.getBoundingClientRect();
+      const localX = e.clientX - rect.left;
+      const clickedHz = pixelXToFrequencyHz(
+        localX,
+        rect.width,
+        e.currentTarget.width,
+        frequencyHz,
+        spanKhz,
+        zoom
+      );
+      onTuneToFrequency(clickedHz);
+    }
+  };
+
+  const handlePointerLeave = () => {
+    hoverRef.current.active = false;
+  };
+
+  const cyclePalette = () => {
+    setPalette((cur) => PALETTE_ORDER[(PALETTE_ORDER.indexOf(cur) + 1) % PALETTE_ORDER.length]);
+  };
 
   return (
     <div className="flex flex-col gap-1 flex-1 min-h-0">
       {/* Scope Header Bar */}
-      <div className="flex flex-wrap lg:flex-nowrap items-center justify-between gap-1.5">
+      <div className="flex flex-wrap landscape:flex-nowrap lg:flex-nowrap items-center justify-between gap-1.5">
         <div className="flex items-center gap-1.5 shrink-0">
-          <span className="text-[10px] font-display font-semibold tracking-wider uppercase text-emerald-300 whitespace-nowrap">
-            Live Users Only
-          </span>
           <label className="sr-only" htmlFor="scope-band-select">
             Scope Band
           </label>
@@ -332,33 +671,6 @@ export const SpectrumWaterfall: React.FC<SpectrumWaterfallProps> = ({
               </option>
             ))}
           </select>
-        </div>
-
-        {/* Active Live Operators Quick-Tune Strip */}
-        <div className="flex flex-wrap items-center gap-1 min-w-0">
-          {realUsersOnBand.length === 0 ? (
-            <span className="text-[10px] font-mono-tabular text-slate-400 whitespace-nowrap">
-              No active TX on {band}
-            </span>
-          ) : (
-            realUsersOnBand.slice(0, 3).map(({ station, evalResult }) => (
-              <button
-                key={station.id}
-                type="button"
-                onClick={() => onTuneToFrequency(station.frequencyHz, station.mode)}
-                className={`px-1.5 py-0.5 rounded text-[10px] font-mono-tabular border transition-colors cursor-pointer whitespace-nowrap ${
-                  !evalResult.propagationOpen
-                    ? 'bg-amber-500/10 border-amber-500/40 text-amber-300'
-                    : Math.abs(station.frequencyHz - frequencyHz) < 800
-                    ? 'bg-emerald-500/20 border-emerald-400 text-emerald-200'
-                    : 'bg-[#0b121d] border-[#1f3147] text-slate-300 hover:border-sky-400/50'
-                }`}
-                title={`Tune to ${station.callsign} (${(station.frequencyHz / 1_000_000).toFixed(3)} MHz ${station.mode}, ${evalResult.propagationOpen ? evalResult.sMeterText : 'Prop Closed'})`}
-              >
-                {station.callsign} · {evalResult.propagationOpen ? evalResult.sMeterText : 'Closed'}
-              </button>
-            ))
-          )}
         </div>
 
         <div className="flex items-center gap-1 shrink-0">
@@ -393,6 +705,45 @@ export const SpectrumWaterfall: React.FC<SpectrumWaterfallProps> = ({
 
           <button
             type="button"
+            onClick={() => setPeakHoldEnabled((v) => !v)}
+            aria-pressed={peakHoldEnabled}
+            className={`px-1 py-0.5 rounded border text-[9.5px] font-mono-tabular cursor-pointer whitespace-nowrap ${
+              peakHoldEnabled
+                ? 'border-sky-400/70 bg-sky-500/15 text-sky-300'
+                : 'border-[#24364d] bg-[#0a1019] text-slate-400'
+            }`}
+            title="Toggle spectrum peak-hold envelope"
+          >
+            PK
+          </button>
+
+          <button
+            type="button"
+            data-testid="waterfall-beacons-toggle"
+            onClick={() => setShowBeacons((v) => !v)}
+            aria-pressed={showBeacons}
+            className={`px-1 py-0.5 rounded border text-[9.5px] font-mono-tabular cursor-pointer whitespace-nowrap ${
+              showBeacons
+                ? 'border-emerald-400/70 bg-emerald-500/15 text-emerald-300'
+                : 'border-[#24364d] bg-[#0a1019] text-slate-400'
+            }`}
+            title="Show band beacons & incoming stations on waterfall"
+          >
+            BCN
+          </button>
+
+          <button
+            type="button"
+            onClick={cyclePalette}
+            className="px-1 py-0.5 rounded border border-[#24364d] bg-[#0a1019] hover:border-sky-400 text-[9.5px] font-mono-tabular text-amber-300 cursor-pointer whitespace-nowrap"
+            aria-label={`Waterfall Palette ${PALETTE_LABELS[palette]}`}
+            title="Cycle waterfall color palette (Aurora / Thermal / Phosphor)"
+          >
+            {PALETTE_LABELS[palette]}
+          </button>
+
+          <button
+            type="button"
             onClick={() => onChangeZoom(1)}
             className="p-0.5 rounded border border-[#24364d] bg-[#0a1019] text-slate-300 hover:border-sky-400 cursor-pointer"
             aria-label="Center Spectrum Scope"
@@ -418,17 +769,25 @@ export const SpectrumWaterfall: React.FC<SpectrumWaterfallProps> = ({
           ref={scopeCanvasRef}
           width={680}
           height={88}
-          onClick={handleCanvasClick}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={handlePointerUp}
+          onPointerLeave={handlePointerLeave}
           data-testid="spectrum-scope-canvas"
-          className="w-full h-[84px] block cursor-crosshair"
+          className="w-full h-[84px] block cursor-crosshair touch-none select-none"
         />
         <canvas
           ref={waterfallCanvasRef}
           width={680}
           height={62}
-          onClick={handleCanvasClick}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={handlePointerUp}
+          onPointerLeave={handlePointerLeave}
           data-testid="waterfall-canvas"
-          className="w-full h-[60px] block border-t border-[#162538] cursor-crosshair"
+          className="w-full h-[60px] block border-t border-[#162538] cursor-crosshair touch-none select-none"
         />
       </div>
     </div>

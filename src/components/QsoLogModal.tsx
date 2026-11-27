@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { BookMarked, Download, Plus, Trash2, X } from 'lucide-react';
+import { resolveGridForCallsign } from '../radio/digitalModes';
 import { formatFrequencyMhz } from '../radio/physics';
-import { BandId, QsoEntry, RadioMode } from '../types/radio';
+import { BandId, CallsignRecord, QsoEntry, RadioMode, RemoteStation } from '../types/radio';
 
 interface QsoLogModalProps {
   open: boolean;
@@ -12,6 +13,8 @@ interface QsoLogModalProps {
   currentPowerW: number;
   suggestedCallsign: string;
   suggestedGrid: string;
+  knownStations?: RemoteStation[];
+  callsignRecords?: CallsignRecord[];
   onAddQso: (entry: Omit<QsoEntry, 'id' | 'timestampUtc'>) => Promise<void>;
   onDeleteQso: (id: string) => Promise<void>;
   onClose: () => void;
@@ -26,6 +29,8 @@ export const QsoLogModal: React.FC<QsoLogModalProps> = ({
   currentPowerW,
   suggestedCallsign,
   suggestedGrid,
+  knownStations,
+  callsignRecords,
   onAddQso,
   onDeleteQso,
   onClose,
@@ -34,19 +39,48 @@ export const QsoLogModal: React.FC<QsoLogModalProps> = ({
   const [rstSent, setRstSent] = useState(currentMode === 'CW' ? '599' : '59');
   const [rstRcvd, setRstRcvd] = useState(currentMode === 'CW' ? '599' : '59');
   const [grid, setGrid] = useState(suggestedGrid || '');
+  const [gridManuallyEdited, setGridManuallyEdited] = useState(false);
   const [notes, setNotes] = useState('');
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const wasOpenRef = useRef(false);
+
+  useEffect(() => {
+    const justOpened = open && !wasOpenRef.current;
+    wasOpenRef.current = open;
+    if (!justOpened) return;
+    const initCall = suggestedCallsign || '';
+    const resolved =
+      suggestedGrid ||
+      (initCall ? resolveGridForCallsign(initCall, knownStations, callsignRecords) : '');
+    setCallsign(initCall);
+    setGrid(resolved);
+    setGridManuallyEdited(false);
+    setRstSent(currentMode === 'CW' || currentMode === 'RTTY' ? '599' : '59');
+    setRstRcvd(currentMode === 'CW' || currentMode === 'RTTY' ? '599' : '59');
+    setError('');
+  }, [open, suggestedCallsign, suggestedGrid, currentMode, knownStations, callsignRecords]);
 
   if (!open) return null;
+
+  const handleCallsignChange = (rawValue: string) => {
+    const cleaned = rawValue.toUpperCase().replace(/[^A-Z0-9/]/g, '');
+    setCallsign(cleaned);
+    if (!gridManuallyEdited || !grid.trim()) {
+      const autoGrid = resolveGridForCallsign(cleaned, knownStations, callsignRecords);
+      setGrid(autoGrid);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleaned = callsign.trim().toUpperCase();
     if (!cleaned) {
-      setError('Enter the contacted station callsign (e.g. DL2QRP).');
+      setError('Enter the contacted station callsign (e.g. ZS1ROM).');
       return;
     }
+    const resolvedGrid =
+      grid.trim().toUpperCase() || resolveGridForCallsign(cleaned, knownStations, callsignRecords);
     setError('');
     setSubmitting(true);
     try {
@@ -58,10 +92,12 @@ export const QsoLogModal: React.FC<QsoLogModalProps> = ({
         rstSent: rstSent.trim() || '59',
         rstRcvd: rstRcvd.trim() || '59',
         powerW: currentPowerW,
-        grid: grid.trim().toUpperCase(),
+        grid: resolvedGrid,
         notes: notes.trim(),
       });
       setCallsign('');
+      setGrid('');
+      setGridManuallyEdited(false);
       setNotes('');
     } finally {
       setSubmitting(false);
@@ -148,7 +184,8 @@ export const QsoLogModal: React.FC<QsoLogModalProps> = ({
                 type="button"
                 onClick={() => {
                   setCallsign(suggestedCallsign);
-                  setGrid(suggestedGrid);
+                  setGrid(suggestedGrid || resolveGridForCallsign(suggestedCallsign, knownStations, callsignRecords));
+                  setGridManuallyEdited(false);
                 }}
                 className="text-sky-400 hover:underline cursor-pointer"
               >
@@ -164,10 +201,11 @@ export const QsoLogModal: React.FC<QsoLogModalProps> = ({
               </label>
               <input
                 id="qso-callsign"
+                data-testid="qso-callsign-input"
                 type="text"
                 value={callsign}
-                onChange={(e) => setCallsign(e.target.value)}
-                placeholder="e.g. DL2QRP"
+                onChange={(e) => handleCallsignChange(e.target.value)}
+                placeholder="e.g. ZS1ROM"
                 className="w-full px-2.5 py-1.5 rounded border border-[#24364d] bg-[#080d14] font-mono-tabular text-xs text-white uppercase focus:outline-none focus:border-sky-400"
               />
             </div>
@@ -204,10 +242,15 @@ export const QsoLogModal: React.FC<QsoLogModalProps> = ({
               </label>
               <input
                 id="qso-grid"
+                data-testid="qso-grid-input"
                 type="text"
                 value={grid}
-                onChange={(e) => setGrid(e.target.value)}
-                placeholder="JO40"
+                onChange={(e) => {
+                  const val = e.target.value.toUpperCase();
+                  setGrid(val);
+                  setGridManuallyEdited(Boolean(val.trim()));
+                }}
+                placeholder="JF96"
                 className="w-full px-2.5 py-1.5 rounded border border-[#24364d] bg-[#080d14] font-mono-tabular text-xs text-white uppercase focus:outline-none focus:border-sky-400"
               />
             </div>

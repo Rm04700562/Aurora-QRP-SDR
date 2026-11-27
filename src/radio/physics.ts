@@ -700,6 +700,59 @@ export function getSubsolarPoint(utcHour: number, timestampMs = Date.now()): { l
   };
 }
 
+export interface GreyLineGeometry {
+  subsolarLat: number;
+  subsolarLon: number;
+  points: Array<{ lon: number; lat: number }>;
+  terminatorPathD: string;
+  nightPolygonD: string;
+}
+
+/**
+ * Computes the astronomical grey-line solar terminator curve and night-hemisphere polygon
+ * in equirectangular 0..360 x 0..180 SVG coordinates for any UTC hour and seasonal date.
+ */
+export function computeGreyLineTerminator(
+  utcHour: number,
+  timestampMs = Date.now()
+): GreyLineGeometry {
+  const subsolar = getSubsolarPoint(utcHour, timestampMs);
+  // Avoid tan(0) singularity right on equinoxes while keeping 89.9° vertical precision
+  const effDeclDeg = Math.abs(subsolar.lat) < 0.12 ? (subsolar.lat >= 0 ? 0.12 : -0.12) : subsolar.lat;
+  const tanDecl = Math.tan((effDeclDeg * Math.PI) / 180);
+  const subLonRad = (subsolar.lon * Math.PI) / 180;
+
+  const points: Array<{ lon: number; lat: number }> = [];
+  const svgPts: Array<{ x: number; y: number }> = [];
+
+  for (let lon = -180; lon <= 180; lon += 4) {
+    const dLonRad = (lon * Math.PI) / 180 - subLonRad;
+    const latRad = Math.atan(-Math.cos(dLonRad) / tanDecl);
+    const lat = (latRad * 180) / Math.PI;
+    points.push({ lon, lat: Number(lat.toFixed(2)) });
+    svgPts.push({
+      x: ((lon + 180) / 360) * 360,
+      y: ((90 - lat) / 180) * 180,
+    });
+  }
+
+  const terminatorPathD = svgPts
+    .map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`)
+    .join(' ');
+
+  // Northern summer (decl > 0): South Pole (y=180) is in night; Northern winter (decl < 0): North Pole (y=0) is in night
+  const nightEdgeY = effDeclDeg >= 0 ? '180.0' : '0.0';
+  const nightPolygonD = `${terminatorPathD} L 360.0 ${nightEdgeY} L 0.0 ${nightEdgeY} Z`;
+
+  return {
+    subsolarLat: subsolar.lat,
+    subsolarLon: subsolar.lon,
+    points,
+    terminatorPathD,
+    nightPolygonD,
+  };
+}
+
 export function getMsUntilNextUtcHour(nowMs = Date.now()): number {
   const nextHourMs = (Math.floor(nowMs / 3_600_000) + 1) * 3_600_000;
   return Math.max(1_000, nextHourMs - nowMs);
@@ -1356,6 +1409,7 @@ export function isSameFrequencyAndPropagationOpen(params: {
   txPowerW?: number;
   conditions: PropagationConditions;
   maxFreqDeltaHz?: number;
+  weakSignalDigital?: boolean;
 }): { allowed: boolean; freqDiffHz: number; voacap: VoacapPathEvaluation } {
   const freqDiffHz = Math.abs(params.txFrequencyHz - params.rxFrequencyHz);
   const toleranceHz =
@@ -1369,8 +1423,11 @@ export function isSameFrequencyAndPropagationOpen(params: {
     powerW: params.txPowerW ?? 15,
     conditions: params.conditions,
   });
+  const circuitOpen = params.weakSignalDigital
+    ? voacap.circuitOpen || voacap.reliabilityPct >= 4
+    : voacap.circuitOpen;
   return {
-    allowed: sameFreq && voacap.circuitOpen,
+    allowed: sameFreq && circuitOpen,
     freqDiffHz,
     voacap,
   };
