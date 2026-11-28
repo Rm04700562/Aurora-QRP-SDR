@@ -288,45 +288,18 @@ test('incoming off-frequency live station renders even when marginal (propagatio
   assert.ok(peer2Peak > -95, `Expected incoming RF burst peak above -95 dBm, got ${peer2Peak}`);
 });
 
-test('propagation beacons appear on waterfall when enabled and hide when showBeacons is false', () => {
-  const cwBeacon = makeStation('beacon-w1aw', 14_246_200, { isBeacon: true, mode: 'CW' });
-  const beaconEval = makeEval('beacon-w1aw', { propagationOpen: true, rxPowerDbm: -76 });
+test('waterfall excludes beacons and only renders real incoming stations and bursts', () => {
+  const realStation = makeStation('peer-a', 14_236_000, { mode: 'USB', isBeacon: false });
+  const arrlBeacon = makeStation('beacon-arrl-news', 14_290_000, {
+    callsign: 'ARRL NEWS',
+    isBeacon: true,
+    mode: 'USB',
+  });
 
-  // Search within a 1s window for an active Morse mark slot
-  let markTimeMs = 1000;
-  for (let t = 1000; t < 3500; t += 95) {
-    const testSlice = synthesizeSpectrumSlice({
-      bins: 240,
-      centerFreqHz: 14_250_000,
-      spanKhz: 50,
-      zoom: 1,
-      mode: 'USB',
-      band: '20m',
-      filterWidthKhz: 2.4,
-      rfGainPct: 50,
-      noiseFloorDbm: -120,
-      noiseReductionPct: 50,
-      noiseBlankerPct: 0,
-      notchPct: 0,
-      isTransmitting: false,
-      micRms: 0,
-      nowMs: t,
-      stations: [],
-      beacons: [{ station: cwBeacon, evalResult: beaconEval }],
-      showBeacons: true,
-      randomFn: () => 0.5,
-    });
-    const peak = Math.max(...testSlice.slice(95, 112));
-    if (peak > -90) {
-      markTimeMs = t;
-      break;
-    }
-  }
-
-  const withBeacons = synthesizeSpectrumSlice({
+  const slice = synthesizeSpectrumSlice({
     bins: 240,
-    centerFreqHz: 14_250_000,
-    spanKhz: 50,
+    centerFreqHz: 14_265_000,
+    spanKhz: 60,
     zoom: 1,
     mode: 'USB',
     band: '20m',
@@ -338,60 +311,38 @@ test('propagation beacons appear on waterfall when enabled and hide when showBea
     notchPct: 0,
     isTransmitting: false,
     micRms: 0,
-    nowMs: markTimeMs,
-    stations: [],
-    beacons: [{ station: cwBeacon, evalResult: beaconEval }],
-    showBeacons: true,
+    nowMs: 1000,
+    stations: [
+      { station: realStation, evalResult: makeEval('peer-a', { rxPowerDbm: -74 }) },
+      { station: arrlBeacon, evalResult: makeEval('beacon-arrl-news', { rxPowerDbm: -60 }) },
+    ],
     randomFn: () => 0.5,
   });
 
-  const withoutBeacons = synthesizeSpectrumSlice({
-    bins: 240,
-    centerFreqHz: 14_250_000,
-    spanKhz: 50,
-    zoom: 1,
-    mode: 'USB',
-    band: '20m',
-    filterWidthKhz: 2.4,
-    rfGainPct: 50,
-    noiseFloorDbm: -120,
-    noiseReductionPct: 50,
-    noiseBlankerPct: 0,
-    notchPct: 0,
-    isTransmitting: false,
-    micRms: 0,
-    nowMs: markTimeMs,
-    stations: [],
-    beacons: [{ station: cwBeacon, evalResult: beaconEval }],
-    showBeacons: false,
-    randomFn: () => 0.5,
-  });
+  // Real station near 14.236 MHz (+1kHz voice = 14.237 MHz -> norm = (14237000 - 14235000)/60000 = 0.033 -> bin ~ 8)
+  const realPeak = Math.max(...slice.slice(4, 16));
+  assert.ok(realPeak > -95, `Expected real station peak above -95 dBm, got ${realPeak}`);
 
-  assert.ok(Math.max(...withBeacons.slice(95, 112)) > -90);
-  assert.ok(Math.max(...withoutBeacons.slice(95, 112)) < -115);
-});
-
-test('collectVisibleSignalMarkers locates live incoming stations and beacons with zero callsigns', () => {
-  const liveStation = makeStation('peer-a', 14_236_000, { mode: 'USB' });
-  const beaconStation = makeStation('beacon-w1aw', 14_246_200, { isBeacon: true, mode: 'CW' });
+  // ARRL NEWS beacon at 14.290 MHz (norm ~ 0.93 -> bin ~ 223) must remain at noise floor on waterfall
+  const beaconAreaMax = Math.max(...slice.slice(215, 232));
+  assert.ok(beaconAreaMax < -115, `Expected beacon excluded from waterfall, got ${beaconAreaMax}`);
 
   const markers = collectVisibleSignalMarkers({
-    centerFreqHz: 14_250_000,
-    spanKhz: 50,
+    centerFreqHz: 14_265_000,
+    spanKhz: 60,
     zoom: 1,
     canvasWidth: 680,
     band: '20m',
     nowMs: 1000,
-    stations: [{ station: liveStation, evalResult: makeEval('peer-a') }],
-    beacons: [{ station: beaconStation, evalResult: makeEval('beacon-w1aw') }],
-    showBeacons: true,
+    stations: [
+      { station: realStation, evalResult: makeEval('peer-a') },
+      { station: arrlBeacon, evalResult: makeEval('beacon-arrl-news') },
+    ],
   });
 
-  assert.equal(markers.length, 2);
+  assert.equal(markers.length, 1);
   assert.equal(markers[0].kind, 'live');
-  assert.equal(markers[1].kind, 'beacon');
-  // Strict guarantee: no callsign fields on marker objects
+  assert.equal(markers[0].freqHz, 14_236_000);
   assert.equal('callsign' in markers[0], false);
-  assert.equal('callsign' in markers[1], false);
 });
 

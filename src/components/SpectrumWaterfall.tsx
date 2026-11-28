@@ -42,7 +42,6 @@ interface SpectrumWaterfallProps {
   micRms: number;
   mode: RadioMode;
   stations: Array<{ station: RemoteStation; evalResult: SignalEvaluation }>;
-  beaconStations?: Array<{ station: RemoteStation; evalResult: SignalEvaluation }>;
   signalBurstsRef?: React.RefObject<WaterfallSignalBurst[]>;
   audioEngine?: SdrAudioEngine | null;
   spanKhz: number;
@@ -79,7 +78,6 @@ export const SpectrumWaterfall: React.FC<SpectrumWaterfallProps> = ({
   micRms,
   mode,
   stations,
-  beaconStations = [],
   signalBurstsRef,
   audioEngine = null,
   spanKhz,
@@ -94,7 +92,6 @@ export const SpectrumWaterfall: React.FC<SpectrumWaterfallProps> = ({
 
   const [palette, setPalette] = useState<WaterfallPaletteId>('aurora');
   const [peakHoldEnabled, setPeakHoldEnabled] = useState<boolean>(true);
-  const [showBeacons, setShowBeacons] = useState<boolean>(true);
 
   const lutRef = useRef<Uint8ClampedArray>(buildWaterfallColorLut('aurora'));
   useEffect(() => {
@@ -135,7 +132,7 @@ export const SpectrumWaterfall: React.FC<SpectrumWaterfallProps> = ({
     didDrag: false,
   });
 
-  // Strictly real connected users in stations list; beacons stay isolated for scope/waterfall only
+  // Strictly real connected incoming stations (zero synthetic beacons on waterfall)
   const realUsers = stations.filter((s) => !s.station.isBeacon);
 
   const stateRef = useRef({
@@ -153,8 +150,6 @@ export const SpectrumWaterfall: React.FC<SpectrumWaterfallProps> = ({
     micRms,
     mode,
     stations: realUsers,
-    beaconStations,
-    showBeacons,
     spanKhz,
     zoom,
     isPoweredOn,
@@ -180,8 +175,6 @@ export const SpectrumWaterfall: React.FC<SpectrumWaterfallProps> = ({
     micRms,
     mode,
     stations: realUsers,
-    beaconStations,
-    showBeacons,
     spanKhz,
     zoom,
     isPoweredOn,
@@ -320,8 +313,6 @@ export const SpectrumWaterfall: React.FC<SpectrumWaterfallProps> = ({
         micRms: s.micRms,
         nowMs: nowEpochMs,
         stations: s.stations,
-        beacons: s.beaconStations,
-        showBeacons: s.showBeacons,
         bursts: signalBurstsRef?.current,
         toneTelemetry: toneTel,
         rttyShiftHz: s.rttyShiftHz,
@@ -462,7 +453,7 @@ export const SpectrumWaterfall: React.FC<SpectrumWaterfallProps> = ({
       sCtx.fillStyle = traceGrad;
       sCtx.fill();
 
-      // Incoming signal pip markers along top of spectrum plot (emerald = live peer, cyan = beacon; NO callsigns)
+      // Real incoming signal pip markers along top of spectrum plot (emerald only; NO callsigns, NO beacons)
       const signalMarkers = collectVisibleSignalMarkers({
         centerFreqHz: s.frequencyHz,
         spanKhz: s.spanKhz,
@@ -472,11 +463,9 @@ export const SpectrumWaterfall: React.FC<SpectrumWaterfallProps> = ({
         nowMs: nowEpochMs,
         stations: s.stations,
         bursts: signalBurstsRef?.current,
-        beacons: s.beaconStations,
-        showBeacons: s.showBeacons,
       });
       for (const mk of signalMarkers) {
-        sCtx.fillStyle = mk.kind === 'live' ? '#34d399' : '#38bdf8';
+        sCtx.fillStyle = '#34d399';
         sCtx.beginPath();
         sCtx.moveTo(mk.x, 12);
         sCtx.lineTo(mk.x - 3.5, 6);
@@ -715,21 +704,6 @@ export const SpectrumWaterfall: React.FC<SpectrumWaterfallProps> = ({
             title="Toggle spectrum peak-hold envelope"
           >
             PK
-          </button>
-
-          <button
-            type="button"
-            data-testid="waterfall-beacons-toggle"
-            onClick={() => setShowBeacons((v) => !v)}
-            aria-pressed={showBeacons}
-            className={`px-1 py-0.5 rounded border text-[9.5px] font-mono-tabular cursor-pointer whitespace-nowrap ${
-              showBeacons
-                ? 'border-emerald-400/70 bg-emerald-500/15 text-emerald-300'
-                : 'border-[#24364d] bg-[#0a1019] text-slate-400'
-            }`}
-            title="Show band beacons & incoming stations on waterfall"
-          >
-            BCN
           </button>
 
           <button

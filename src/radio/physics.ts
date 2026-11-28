@@ -799,6 +799,57 @@ export function evaluateBandCondition(
 
 export type PropagationRating = 'Excellent' | 'Good' | 'Fair' | 'Poor' | 'Aurora';
 
+export function getBandPropagationStyle(rating: PropagationRating): {
+  short: string;
+  text: string;
+  cell: string;
+  activeCell: string;
+} {
+  switch (rating) {
+    case 'Excellent':
+      return {
+        short: 'EXC',
+        text: 'text-emerald-300',
+        cell: 'bg-emerald-500/18 border-emerald-400/55 text-emerald-300',
+        activeCell: 'bg-emerald-500/35 border-emerald-300 text-white ring-1 ring-white/90 font-bold shadow-[0_0_8px_rgba(16,185,129,0.4)]',
+      };
+    case 'Good':
+      return {
+        short: 'GOOD',
+        text: 'text-sky-300',
+        cell: 'bg-sky-500/18 border-sky-400/55 text-sky-300',
+        activeCell: 'bg-sky-500/35 border-sky-300 text-white ring-1 ring-white/90 font-bold shadow-[0_0_8px_rgba(56,189,248,0.4)]',
+      };
+    case 'Aurora':
+      return {
+        short: 'AUR',
+        text: 'text-purple-300',
+        cell: 'bg-purple-500/20 border-purple-400/60 text-purple-300',
+        activeCell: 'bg-purple-500/38 border-purple-300 text-white ring-1 ring-white/90 font-bold shadow-[0_0_8px_rgba(192,132,252,0.45)]',
+      };
+    case 'Fair':
+      return {
+        short: 'FAIR',
+        text: 'text-amber-300',
+        cell: 'bg-amber-500/18 border-amber-400/55 text-amber-300',
+        activeCell: 'bg-amber-500/35 border-amber-300 text-white ring-1 ring-white/90 font-bold shadow-[0_0_8px_rgba(251,191,36,0.4)]',
+      };
+    default:
+      return {
+        short: 'POOR',
+        text: 'text-rose-300',
+        cell: 'bg-rose-500/14 border-rose-500/45 text-rose-300',
+        activeCell: 'bg-rose-500/32 border-rose-300 text-white ring-1 ring-white/90 font-bold shadow-[0_0_8px_rgba(244,63,94,0.4)]',
+      };
+  }
+}
+
+export function getLeftBandButtonClass(active: boolean): string {
+  return active
+    ? 'bg-black border-sky-400 text-sky-300 font-bold ring-1 ring-sky-400/70 shadow-[0_0_8px_rgba(56,189,248,0.3)]'
+    : 'bg-black border-[#1f3045] text-slate-300 hover:border-sky-400/60 hover:text-white';
+}
+
 /**
  * Generates an hourly propagation snapshot synchronized to the current UTC hour,
  * optionally blending live NOAA SWPC solar flux & planetary K-index measurements.

@@ -1,7 +1,7 @@
 import React from 'react';
 import { Globe2, LocateFixed, SlidersHorizontal } from 'lucide-react';
 import { buildWorldMapBeamPaths } from '../radio/azimuthalMap';
-import { BANDS, calculateBearingDeg, computeGreyLineTerminator, evaluateBandCondition } from '../radio/physics';
+import { BANDS, calculateBearingDeg, computeGreyLineTerminator, evaluateBandCondition, getBandPropagationStyle } from '../radio/physics';
 import { BandId, PropagationConditions, QthLocation, RemoteStation, SignalEvaluation } from '../types/radio';
 
 interface WorldMapPanelProps {
@@ -16,6 +16,7 @@ interface WorldMapPanelProps {
   isRotatable?: boolean;
   onLocateMe?: () => void;
   onOpenSettings?: () => void;
+  onTuneArrlBeacon?: () => void;
 }
 
 // Simplified equirectangular continent polygons in 0..360 x 0..180 space
@@ -40,41 +41,6 @@ function projectLonLat(lon: number, lat: number): { x: number; y: number } {
   return { x, y };
 }
 
-function ratingStyles(rating: 'Excellent' | 'Good' | 'Fair' | 'Poor' | 'Aurora') {
-  switch (rating) {
-    case 'Excellent':
-      return {
-        short: 'EXC',
-        text: 'text-emerald-300',
-        cell: 'bg-emerald-500/18 border-emerald-400/50 text-emerald-300',
-      };
-    case 'Good':
-      return {
-        short: 'GOOD',
-        text: 'text-sky-300',
-        cell: 'bg-sky-500/18 border-sky-400/50 text-sky-300',
-      };
-    case 'Aurora':
-      return {
-        short: 'AUR',
-        text: 'text-purple-300',
-        cell: 'bg-purple-500/20 border-purple-400/55 text-purple-300',
-      };
-    case 'Fair':
-      return {
-        short: 'FAIR',
-        text: 'text-amber-300',
-        cell: 'bg-amber-500/18 border-amber-400/50 text-amber-300',
-      };
-    default:
-      return {
-        short: 'POOR',
-        text: 'text-rose-300',
-        cell: 'bg-rose-500/14 border-rose-500/40 text-rose-300',
-      };
-  }
-}
-
 export const WorldMapPanel: React.FC<WorldMapPanelProps> = ({
   qth,
   rotorHeadingDeg,
@@ -87,12 +53,13 @@ export const WorldMapPanel: React.FC<WorldMapPanelProps> = ({
   isRotatable = true,
   onLocateMe,
   onOpenSettings,
+  onTuneArrlBeacon,
 }) => {
   const qthPt = projectLonLat(qth.lon, qth.lat);
   const beamPaths = buildWorldMapBeamPaths(qth, rotorHeadingDeg, 105);
 
   const bandCond = evaluateBandCondition(band, propagation, qth);
-  const activeBadge = ratingStyles(bandCond.rating);
+  const activeBadge = getBandPropagationStyle(bandCond.rating);
 
   const greyLine = computeGreyLineTerminator(propagation.utcHour, propagation.timestampMs);
 
@@ -210,7 +177,7 @@ export const WorldMapPanel: React.FC<WorldMapPanelProps> = ({
                   onSetRotorTarget(evalResult.bearingToTxDeg);
                 }}
                 className={isRotatable ? 'cursor-pointer' : 'cursor-default'}
-                data-testid={isPeer ? `world-user-dot-${station.callsign}` : undefined}
+                data-testid={isPeer ? `world-user-dot-${station.callsign}` : 'world-beacon-dot-ARRL-NEWS'}
               >
                 <title>
                   {`${station.callsign} (${station.band} · ${evalResult.distanceKm} km · ${evalResult.bearingToTxDeg}°)${isRotatable ? ' — Click to aim rotator' : ''}`}
@@ -242,6 +209,22 @@ export const WorldMapPanel: React.FC<WorldMapPanelProps> = ({
             {band}: {bandCond.rating}
           </span>
         </div>
+
+        {onTuneArrlBeacon && (
+          <button
+            type="button"
+            data-testid="arrl-news-beacon-btn"
+            onClick={(e) => {
+              e.stopPropagation();
+              onTuneArrlBeacon();
+            }}
+            title="Tune to ARRL NEWS beacon (14.290 MHz USB · FN31)"
+            className="absolute bottom-0.5 left-1 flex items-center gap-1 px-1 py-0 rounded bg-[#070c14]/88 border border-sky-400/45 hover:border-sky-300 text-[8px] font-mono-tabular text-sky-300 hover:text-white cursor-pointer leading-tight"
+          >
+            <span className="w-1.5 h-1.5 rounded-full bg-sky-400 shrink-0" aria-hidden="true" />
+            <span>ARRL NEWS · 14.290</span>
+          </button>
+        )}
       </div>
 
       {/* Per-Band Propagation Strip */}
@@ -252,7 +235,7 @@ export const WorldMapPanel: React.FC<WorldMapPanelProps> = ({
       >
         {BANDS.map((b) => {
           const cond = evaluateBandCondition(b.id, propagation, qth);
-          const style = ratingStyles(cond.rating);
+          const style = getBandPropagationStyle(cond.rating);
           const isCurrent = b.id === band;
           return (
             <button

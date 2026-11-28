@@ -2,15 +2,19 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildFt8AutoReplyPayload,
+  buildFt8RowClickDraft,
   canAutoReplyFt8Row,
   clampAndStepRttyFineOffset,
   decodeBase64ToRgb,
   decodeBaudotChars,
+  decodeJttyChars,
+  demodulateJttyPcm,
   demodulateRttyPcm,
   demodulateSstvAudioToRgb,
   detectCountryFromTimeZone,
   encodeBaudotChars,
   encodeFt8Tones,
+  encodeJttyChars,
   encodeRgbToBase64,
   findNearestRttySignalOffsetHz,
   formatFt8Cq,
@@ -19,19 +23,27 @@ import {
   formatHrCallsign,
   generateSstvTestPattern,
   getHrCountrySpec,
+  getJttyMarkSpaceFreqs,
   getRttyMarkSpaceFreqs,
+  getStandardJttyFrequency,
   getStandardRttyFrequency,
   getStandardSstvFrequency,
   isValidHamCallsign,
+  jttyDurationMs,
+  jttyMarkSpaceTimeline,
   luminanceToSstvFreqHz,
   parseFt8Message,
   resolveFt8ReportTarget,
+  romajiToKatakana,
   rttyDurationMs,
   rttyMarkSpaceTimeline,
+  sanitizeFt8DraftInput,
+  sanitizeJttyText,
   SSTV_HEIGHT,
   SSTV_WIDTH,
   sstvFreqHzToLuminance,
   stepRttyFineOffset,
+  synthesizeJttyAudioPcm,
   synthesizeRttyAudioPcm,
   synthesizeSstvAudioPcm,
 } from './digitalModes';
@@ -361,5 +373,87 @@ test('parseFt8Message handles 3-part directed CQ calls cleanly for replying', ()
     { dxCall: 'ZS1ROM', message: 'ZS1ROM 26HR001 IO91', audioFreqHz: 1400 }
   );
 });
+
+test('sanitizeFt8DraftInput preserves spaces while typing and buildFt8RowClickDraft advances FT8 QSO stages', () => {
+  assert.equal(sanitizeFt8DraftInput('  cq  w1aw '), 'CQ W1AW ');
+  assert.equal(sanitizeFt8DraftInput('cq zs1rom!@#$ fn31'), 'CQ ZS1ROM FN31');
+  assert.equal(sanitizeFt8DraftInput('A'.repeat(40)).length, 28);
+
+  assert.deepEqual(
+    buildFt8RowClickDraft(
+      { direction: 'RX', isCq: true, callsign: 'W1AW', snrDb: -6, audioFreqHz: 1450, message: 'CQ W1AW FN31' },
+      'ZS1ROM',
+      'JF96'
+    ),
+    { dxCall: 'W1AW', message: 'W1AW ZS1ROM JF96', audioFreqHz: 1450 }
+  );
+
+  assert.deepEqual(
+    buildFt8RowClickDraft(
+      { direction: 'RX', isCq: false, callsign: 'W1AW', snrDb: -6, audioFreqHz: 1450, message: 'ZS1ROM W1AW FN31' },
+      'ZS1ROM',
+      'JF96'
+    ),
+    { dxCall: 'W1AW', message: 'W1AW ZS1ROM -06', audioFreqHz: 1450 }
+  );
+
+  assert.deepEqual(
+    buildFt8RowClickDraft(
+      { direction: 'RX', isCq: false, callsign: 'W1AW', snrDb: 4, audioFreqHz: 1450, message: 'ZS1ROM W1AW -09' },
+      'ZS1ROM',
+      'JF96'
+    ),
+    { dxCall: 'W1AW', message: 'W1AW ZS1ROM R+04', audioFreqHz: 1450 }
+  );
+
+  assert.deepEqual(
+    buildFt8RowClickDraft(
+      { direction: 'RX', isCq: false, callsign: 'W1AW', snrDb: 4, audioFreqHz: 1450, message: 'ZS1ROM W1AW R+04' },
+      'ZS1ROM',
+      'JF96'
+    ),
+    { dxCall: 'W1AW', message: 'W1AW ZS1ROM RR73', audioFreqHz: 1450 }
+  );
+
+  assert.deepEqual(
+    buildFt8RowClickDraft(
+      { direction: 'RX', isCq: false, callsign: 'W1AW', snrDb: 4, audioFreqHz: 1450, message: 'ZS1ROM W1AW RR73' },
+      'ZS1ROM',
+      'JF96'
+    ),
+    { dxCall: 'W1AW', message: 'W1AW ZS1ROM 73', audioFreqHz: 1450 }
+  );
+});
+
+test('JTTY 6-unit JIS Katakana/Latin codec, Romaji converter, and FSK DSP roundtrip work end-to-end', () => {
+  assert.equal(romajiToKatakana('TOUKYOU'), 'トウキョウ');
+  assert.equal(romajiToKatakana('konnichiwa'), 'コンニチワ');
+  assert.equal(sanitizeJttyText('こんにちは DE ja1xyz 599 K'), 'コンニチハ DE JA1XYZ 599 K');
+  assert.equal(getStandardJttyFrequency('20m'), 14_088_000);
+
+  const mixed = 'CQ CQ デ JA1XYZ トウキョウ 599 K';
+  const words = encodeJttyChars(mixed);
+  assert.equal(decodeJttyChars(words), mixed);
+
+  const segs = jttyMarkSpaceTimeline('CQ カナ', { baudRate: 50, shiftHz: 170, markHz: 2125 });
+  assert.ok(segs.length > 20);
+  assert.ok(jttyDurationMs('CQ カナ', { baudRate: 50 }) > 600);
+
+  const freqs = getJttyMarkSpaceFreqs({ markHz: 1275, shiftHz: 425, fineOffsetHz: 20, reversePolarity: true });
+  assert.equal(freqs.markHz, 1720);
+  assert.equal(freqs.spaceHz, 1295);
+
+  const pcmStd = synthesizeJttyAudioPcm(mixed, 16000, { baudRate: 50, shiftHz: 170, markHz: 2125 });
+  const decStd = demodulateJttyPcm(pcmStd, 16000, { baudRate: 50, shiftHz: 170, markHz: 2125 });
+  assert.equal(decStd.text, mixed);
+  assert.ok(decStd.markSnrRatio > 5);
+
+  const fastMsg = 'DE ZS1ROM 73 サヨウナラ';
+  const fastCfg = { baudRate: 75 as const, shiftHz: 425 as const, markHz: 1275 as const, reversePolarity: true };
+  const pcmFast = synthesizeJttyAudioPcm(fastMsg, 16000, fastCfg);
+  const decFast = demodulateJttyPcm(pcmFast, 16000, fastCfg);
+  assert.equal(decFast.text, fastMsg);
+});
+
 
 

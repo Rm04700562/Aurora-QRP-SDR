@@ -16,19 +16,22 @@ import { StationSettingsModal } from './components/StationSettingsModal';
 import { VfoDeck } from './components/VfoDeck';
 import { WorldMapPanel } from './components/WorldMapPanel';
 import { estimateQthFromTimeZone } from './radio/azimuthalMap';
-import { PROPAGATION_BEACONS } from './radio/beacons';
+import { ARRL_NEWS_BEACON } from './radio/beacons';
 import { WaterfallSignalBurst } from './radio/waterfall';
 import {
   decodeBase64ToRgb,
+  DEFAULT_JTTY_CONFIG,
   DEFAULT_RTTY_CONFIG,
   detectCountryFromTimeZone,
   encodeFt8Tones,
   formatHrCallsign,
   getHrCountrySpec,
+  jttyDurationMs,
   parseFt8Message,
   resolveGridForCallsign,
   rttyDurationMs,
   sanitizeFt8Message,
+  sanitizeJttyText,
   sanitizeRttyText,
   SSTV_HEIGHT,
   SSTV_MODE_SPECS,
@@ -66,13 +69,14 @@ import {
   beginAutomatedTx,
   beginPttHold,
   canCaptureAudio,
+  createStartupPttMicState,
   endAutomatedTx,
   endPttHold,
-  INITIAL_PTT_MIC_STATE,
   PttMicState,
   PttStopReason,
   resolvePttMicStart,
   setPowerState,
+  STARTUP_TRANSCEIVER_STATE,
   togglePttLatch,
 } from './radio/pttController';
 import {
@@ -83,6 +87,7 @@ import {
   DigitalFeedLine,
   DxClusterSpot,
   Ft8DecodedLine,
+  JttyConfig,
   PropagationConditions,
   QsoEntry,
   QthLocation,
@@ -200,6 +205,8 @@ export default function App() {
   const [activeBand, setActiveBand] = useState<BandId>('20m');
   const [mode, setMode] = useState<RadioMode>('USB');
   const [activeModuleTab, setActiveModuleTab] = useState<WorkspaceModuleTab>('waterfall');
+  const activeModuleTabRef = useRef(activeModuleTab);
+  activeModuleTabRef.current = activeModuleTab;
   const [ritHz, setRitHz] = useState(0);
   const [xitHz, setXitHz] = useState(0);
   const [clarifierHz, setClarifierHz] = useState(0);
@@ -220,10 +227,10 @@ export default function App() {
   const [noiseReductionPct, setNoiseReductionPct] = useState(48);
   const [notchPct, setNotchPct] = useState(20);
   const [noiseBlankerPct, setNoiseBlankerPct] = useState(0);
-  const [audioEnabled, setAudioEnabled] = useState(true);
+  const [audioEnabled, setAudioEnabled] = useState<boolean>(STARTUP_TRANSCEIVER_STATE.audioEnabled);
   const audioEnabledRef = useRef(audioEnabled);
   audioEnabledRef.current = audioEnabled;
-  const [isPoweredOn, setIsPoweredOn] = useState(true);
+  const [isPoweredOn, setIsPoweredOn] = useState<boolean>(STARTUP_TRANSCEIVER_STATE.isPoweredOn);
   const isPoweredOnRef = useRef(isPoweredOn);
   isPoweredOnRef.current = isPoweredOn;
 
@@ -232,7 +239,7 @@ export default function App() {
   const [zoom, setZoom] = useState(1);
 
   // TX / PTT / Mic / Keyer (up to 100W RF, 15W startup default; mic strictly inactive in RX)
-  const pttMicRef = useRef<PttMicState>(INITIAL_PTT_MIC_STATE);
+  const pttMicRef = useRef<PttMicState>(createStartupPttMicState());
   const [isTransmitting, setIsTransmitting] = useState(false);
   const isTransmittingRef = useRef(isTransmitting);
   isTransmittingRef.current = isTransmitting;
@@ -263,12 +270,17 @@ export default function App() {
   const cwEndTimerRef = useRef<number | null>(null);
   const cwProgressTimerRef = useRef<number | null>(null);
 
-  // RTTY / SSTV / FT8 State
+  // RTTY / JTTY / SSTV / FT8 State
   const [rttyConfig, setRttyConfig] = useState<RttyConfig>(DEFAULT_RTTY_CONFIG);
   const rttyConfigRef = useRef(rttyConfig);
   rttyConfigRef.current = rttyConfig;
   const [rttyFeed, setRttyFeed] = useState<DigitalFeedLine[]>([]);
   const [isSendingRtty, setIsSendingRtty] = useState(false);
+  const [jttyConfig, setJttyConfig] = useState<JttyConfig>(DEFAULT_JTTY_CONFIG);
+  const jttyConfigRef = useRef(jttyConfig);
+  jttyConfigRef.current = jttyConfig;
+  const [jttyFeed, setJttyFeed] = useState<DigitalFeedLine[]>([]);
+  const [isSendingJtty, setIsSendingJtty] = useState(false);
   const [sstvRxFrame, setSstvRxFrame] = useState<SstvFramePayload | null>(null);
   const [sstvRxProgress, setSstvRxProgress] = useState(0);
   const [sstvRxStats, setSstvRxStats] = useState<{
@@ -389,12 +401,12 @@ export default function App() {
   const evaluatedStationsRef = useRef(evaluatedStations);
   evaluatedStationsRef.current = evaluatedStations;
 
-  // Evaluate active-band propagation beacons strictly for waterfall/scope RF display (never in Cluster/Log/S-Meter)
-  const waterfallBeaconStations = useMemo(() => {
-    return PROPAGATION_BEACONS.filter((b) => b.band === activeBand).map((station) => ({
-      station,
+  // Evaluate single ARRL NEWS beacon (map/rotor/S-meter when tuned to 14.290 MHz; never injected onto waterfall or QSO log)
+  const arrlNewsBeaconEval = useMemo(
+    () => ({
+      station: ARRL_NEWS_BEACON,
       evalResult: evaluateRemoteSignal({
-        station,
+        station: ARRL_NEWS_BEACON,
         rxQth: qth,
         rxBand: activeBand,
         rxFrequencyHz: effectiveRxFreqHz,
@@ -405,34 +417,42 @@ export default function App() {
         rxRfGainPct: rfGainPct,
         conditions: propagation,
       }),
-    }));
-  }, [
-    activeBand,
-    qth,
-    effectiveRxFreqHz,
-    mode,
-    filterWidthKhz,
-    antennaId,
-    rotorHeadingDeg,
-    rfGainPct,
-    propagation,
-  ]);
+    }),
+    [
+      qth,
+      activeBand,
+      effectiveRxFreqHz,
+      mode,
+      filterWidthKhz,
+      antennaId,
+      rotorHeadingDeg,
+      rfGainPct,
+      propagation,
+    ]
+  );
+
+  const mapAndBeaconStations = useMemo(
+    () => [...evaluatedStations, arrlNewsBeaconEval],
+    [evaluatedStations, arrlNewsBeaconEval]
+  );
 
   const bandCondition = useMemo(
     () => evaluateBandCondition(activeBand, propagation, qth),
     [activeBand, propagation, qth]
   );
 
-  // Strongest live user signal in passband for S-Meter
+  // Strongest live incoming station in passband for S-Meter (falls back to ARRL NEWS beacon only when tuned onto 14.290 MHz)
   const bestInPassband = useMemo(() => {
     const candidates = evaluatedStations.filter(
       (s) => s.station.isTransmitting && s.evalResult.inPassband
     );
-    if (candidates.length === 0) return null;
-    return candidates.reduce((best, cur) =>
-      cur.evalResult.rxPowerDbm > best.evalResult.rxPowerDbm ? cur : best
-    );
-  }, [evaluatedStations]);
+    if (candidates.length > 0) {
+      return candidates.reduce((best, cur) =>
+        cur.evalResult.rxPowerDbm > best.evalResult.rxPowerDbm ? cur : best
+      );
+    }
+    return arrlNewsBeaconEval.evalResult.inPassband ? arrlNewsBeaconEval : null;
+  }, [evaluatedStations, arrlNewsBeaconEval]);
 
   const sMeterDbm = bestInPassband
     ? bestInPassband.evalResult.rxPowerDbm
@@ -541,6 +561,8 @@ export default function App() {
       bestSignalSnrDb: bestInPassband?.evalResult.snrDb ?? 0,
       bestSignalInPassband: Boolean(bestInPassband),
       auroraFlutter: bestInPassband?.evalResult.auroraFlutter ?? (propagation.auroraActive ? 0.5 : 0),
+      compressionPct,
+      isPoweredOn,
     });
   }, [
     afGainPct,
@@ -556,9 +578,10 @@ export default function App() {
     bandCondition.noiseDbm,
     bestInPassband,
     propagation.auroraActive,
+    compressionPct,
   ]);
 
-  // Keep PTT section LED VU bar & ALC responsive during CW, RTTY, SSTV, and FT8 TX
+  // Keep PTT section LED VU bar & ALC responsive during CW, RTTY, JTTY, SSTV, and FT8 TX
   useEffect(() => {
     if (!isPoweredOn || !isTransmitting) return;
     if (mode !== 'CW' && mode !== 'RTTY' && mode !== 'SSTV' && mode !== 'FT8') return;
@@ -575,7 +598,10 @@ export default function App() {
         const keyDown = tel && tel.mode === 'CW' ? tel.markActive : true;
         digitalDb = keyDown ? -7.5 + 1.2 * Math.sin(nowSec * 12) : -38.0;
       } else if (mode === 'RTTY') {
-        const mark = tel && tel.mode === 'RTTY' ? tel.markActive : Math.sin(nowSec * 18) > 0;
+        const mark =
+          tel && (tel.mode === 'RTTY' || tel.mode === 'JTTY')
+            ? tel.markActive
+            : Math.sin(nowSec * 18) > 0;
         digitalDb = (mark ? -8.0 : -10.5) + 0.9 * Math.sin(nowSec * 23);
       } else if (mode === 'FT8') {
         const ripple = tel?.freqHz ? ((tel.freqHz % 50) / 50) * 2.2 : 0;
@@ -1038,6 +1064,59 @@ export default function App() {
               audioEngineRef.current?.playRttySequence(msg.text, 0.16, false, rxAlignedCfg);
             }
           }
+        } else if (msg.type === 'jtty:tx' && typeof msg.text === 'string') {
+          if (!isPoweredOnRef.current) return;
+          const fromId = msg.fromId as string;
+          const match = evaluatedStationsRef.current.find((s) => s.station.id === fromId);
+          const peerCfg =
+            msg.jttyConfig && typeof msg.jttyConfig === 'object'
+              ? (msg.jttyConfig as Partial<JttyConfig>)
+              : jttyConfigRef.current;
+          if ((match?.station.band ?? msg.band) === activeBandRef.current) {
+            recordSignalBurst({
+              id: `jtty-${fromId}`,
+              band: (match?.station.band ?? msg.band ?? activeBandRef.current) as BandId,
+              frequencyHz: Number(msg.frequencyHz ?? match?.station.frequencyHz ?? effectiveRxFreqRef.current),
+              mode: 'RTTY',
+              powerDbm: Math.max(-108, match ? match.evalResult.rxPowerDbm : -72),
+              rttyShiftHz: peerCfg.shiftHz ?? 170,
+              durationMs: Math.max(1000, Math.min(7000, jttyDurationMs(msg.text, peerCfg))),
+            });
+          }
+          const canDecode = match
+            ? match.evalResult.inPassband && match.evalResult.propagationOpen
+            : Boolean(
+                msg.qth &&
+                  isSameFrequencyAndPropagationOpen({
+                    rxQth: qthRef.current,
+                    txQth: msg.qth as QthLocation,
+                    rxBand: activeBandRef.current,
+                    txBand: msg.band as BandId,
+                    rxFrequencyHz: effectiveRxFreqRef.current,
+                    txFrequencyHz: Number(msg.frequencyHz ?? 0),
+                    rxFilterWidthKhz: filterWidthKhzRef.current,
+                    conditions: propagationRef.current,
+                  }).allowed
+              );
+          if (canDecode) {
+            const sender = String(msg.callsign ?? 'RX');
+            setJttyFeed((prev) => [
+              {
+                id: `jtty-${Date.now()}-${Math.random()}`,
+                timestampUtc: String(msg.timestampUtc ?? nowUtcStamp()),
+                direction: 'RX',
+                mode: 'JTTY',
+                callsign: sender,
+                frequencyHz: Number(msg.frequencyHz ?? effectiveRxFreqRef.current),
+                snrDb: match ? Math.round(match.evalResult.snrDb) : undefined,
+                text: msg.text as string,
+              },
+              ...prev.slice(0, 49),
+            ]);
+            if (audioEnabledRef.current) {
+              audioEngineRef.current?.playJttySequence(msg.text, 0.16, false, peerCfg);
+            }
+          }
         } else if (msg.type === 'ft8:tx' && typeof msg.message === 'string') {
           if (!isPoweredOnRef.current) return;
           const fromId = msg.fromId as string;
@@ -1211,19 +1290,37 @@ export default function App() {
     isPoweredOn,
   ]);
 
-  // Unlock Web Audio automatically on first user gesture (Windows/Mac/iOS/Android)
+  // Ensure the transceiver turns ON on startup and initialize/unlock Web Audio immediately (Windows/Mac/iOS/Android)
+  useEffect(() => {
+    setIsPoweredOn(STARTUP_TRANSCEIVER_STATE.isPoweredOn);
+    setAudioEnabled(STARTUP_TRANSCEIVER_STATE.audioEnabled);
+    pttMicRef.current = setPowerState(pttMicRef.current, STARTUP_TRANSCEIVER_STATE.isPoweredOn);
+  }, []);
+
   useEffect(() => {
     if (!isPoweredOn || !audioEnabled) return;
+    const engine = audioEngineRef.current;
+    if (!engine) return;
+
+    void engine.resumeIfNeeded();
+
     const unlock = () => {
-      void audioEngineRef.current?.resumeIfNeeded();
+      void engine.resumeIfNeeded();
     };
-    window.addEventListener('pointerdown', unlock, { passive: true });
-    window.addEventListener('touchstart', unlock, { passive: true });
-    window.addEventListener('keydown', unlock, { passive: true });
+    const opts: AddEventListenerOptions = { passive: true, capture: true };
+    window.addEventListener('pointerdown', unlock, opts);
+    window.addEventListener('mousedown', unlock, opts);
+    window.addEventListener('click', unlock, opts);
+    window.addEventListener('touchstart', unlock, opts);
+    window.addEventListener('touchend', unlock, opts);
+    window.addEventListener('keydown', unlock, opts);
     return () => {
-      window.removeEventListener('pointerdown', unlock);
-      window.removeEventListener('touchstart', unlock);
-      window.removeEventListener('keydown', unlock);
+      window.removeEventListener('pointerdown', unlock, opts);
+      window.removeEventListener('mousedown', unlock, opts);
+      window.removeEventListener('click', unlock, opts);
+      window.removeEventListener('touchstart', unlock, opts);
+      window.removeEventListener('touchend', unlock, opts);
+      window.removeEventListener('keydown', unlock, opts);
     };
   }, [isPoweredOn, audioEnabled]);
 
@@ -1269,6 +1366,7 @@ export default function App() {
       setIsSendingCw(false);
       setCwTxProgress(0);
       setIsSendingRtty(false);
+      setIsSendingJtty(false);
       setIsSendingSstv(false);
       setIsSendingFt8(false);
       setSstvTxProgress(0);
@@ -1307,6 +1405,7 @@ export default function App() {
     pttMicRef.current = endAutomatedTx(pttMicRef.current);
     isTransmittingRef.current = pttMicRef.current.isTransmitting;
     setIsSendingRtty(false);
+    setIsSendingJtty(false);
     setIsSendingSstv(false);
     setIsSendingFt8(false);
     setSstvTxProgress(0);
@@ -1343,6 +1442,7 @@ export default function App() {
         setPttLatched(false);
         setIsSendingCw(false);
         setIsSendingRtty(false);
+        setIsSendingJtty(false);
         setIsSendingSstv(false);
         setIsSendingFt8(false);
         setCwTxProgress(0);
@@ -1508,6 +1608,7 @@ export default function App() {
       setIsSendingCw(false);
       setCwTxProgress(0);
       setIsSendingRtty(false);
+      setIsSendingJtty(false);
       setIsSendingSstv(false);
       setIsSendingFt8(false);
       setSstvTxProgress(0);
@@ -1625,7 +1726,9 @@ export default function App() {
       setActiveModuleTab('cw');
     } else if (nextMode === 'RTTY') {
       setFilterWidthKhz(1.0);
-      setActiveModuleTab('rtty');
+      if (activeModuleTabRef.current !== 'jtty') {
+        setActiveModuleTab('rtty');
+      }
     } else if (nextMode === 'SSTV') {
       setFilterWidthKhz(2.4);
       setActiveModuleTab('sstv');
@@ -1680,6 +1783,21 @@ export default function App() {
     },
     [antennaId]
   );
+
+  const handleTuneArrlBeacon = useCallback(() => {
+    handleTuneToFrequency(ARRL_NEWS_BEACON.frequencyHz, ARRL_NEWS_BEACON.mode);
+    handleSetRotorTarget(arrlNewsBeaconEval.evalResult.bearingToTxDeg);
+    if (isPoweredOn && audioEnabledRef.current) {
+      void audioEngineRef.current?.resumeIfNeeded().then(() => {
+        audioEngineRef.current?.playMorseSequence('QST DE W1AW ARRL NEWS K', 16, 720, 0.2, false);
+      });
+    }
+  }, [
+    handleTuneToFrequency,
+    handleSetRotorTarget,
+    arrlNewsBeaconEval.evalResult.bearingToTxDeg,
+    isPoweredOn,
+  ]);
 
   const handleLocateMe = useCallback(() => {
     if (typeof navigator === 'undefined' || !navigator.geolocation) {
@@ -1736,6 +1854,12 @@ export default function App() {
       if (!msg || !hasSendableMorse(msg)) return;
 
       clearCwTimers();
+      clearDigitalTimers();
+      setIsSendingRtty(false);
+      setIsSendingJtty(false);
+      setIsSendingSstv(false);
+      setIsSendingFt8(false);
+      setSstvTxProgress(0);
       pttMicRef.current = beginAutomatedTx(pttMicRef.current);
       isSendingCwRef.current = true;
       setMode('CW');
@@ -1796,7 +1920,7 @@ export default function App() {
         }
       }, durationMs);
     },
-    [cwWpm, callsign, currentFreqHz, clearCwTimers]
+    [cwWpm, callsign, currentFreqHz, clearCwTimers, clearDigitalTimers]
   );
 
   const handleSendCwCq = useCallback(() => {
@@ -1811,7 +1935,15 @@ export default function App() {
       const clean = sanitizeRttyText(rawText).trim();
       if (!clean) return;
 
+      clearCwTimers();
       clearDigitalTimers();
+      isSendingCwRef.current = false;
+      setIsSendingCw(false);
+      setCwTxProgress(0);
+      setIsSendingJtty(false);
+      setIsSendingSstv(false);
+      setIsSendingFt8(false);
+      setSstvTxProgress(0);
       pttMicRef.current = beginAutomatedTx(pttMicRef.current);
       setMode('RTTY');
       setFilterWidthKhz(1.0);
@@ -1854,7 +1986,7 @@ export default function App() {
         }
       }, dur);
     },
-    [callsign, currentFreqHz, clearDigitalTimers]
+    [callsign, currentFreqHz, clearCwTimers, clearDigitalTimers]
   );
 
   const handleLoopbackRtty = useCallback(
@@ -1875,10 +2007,95 @@ export default function App() {
     [currentFreqHz]
   );
 
+  const handleSendJtty = useCallback(
+    (rawText: string) => {
+      if (!isPoweredOnRef.current) return;
+      const clean = sanitizeJttyText(rawText).trim();
+      if (!clean) return;
+
+      clearCwTimers();
+      clearDigitalTimers();
+      isSendingCwRef.current = false;
+      setIsSendingCw(false);
+      setCwTxProgress(0);
+      setIsSendingRtty(false);
+      setIsSendingSstv(false);
+      setIsSendingFt8(false);
+      setSstvTxProgress(0);
+      pttMicRef.current = beginAutomatedTx(pttMicRef.current);
+      setMode('RTTY');
+      setFilterWidthKhz(1.0);
+      audioEngineRef.current?.ensureContext();
+      audioEngineRef.current?.setTransmitting(true);
+      isTransmittingRef.current = true;
+      setIsTransmitting(true);
+      setIsSendingJtty(true);
+      setChecklist((c) => ({ ...c, transmittedOrCw: true }));
+
+      setJttyFeed((prev) => [
+        {
+          id: `jtty-tx-${Date.now()}`,
+          timestampUtc: nowUtcStamp(),
+          direction: 'TX',
+          mode: 'JTTY',
+          callsign,
+          frequencyHz: currentFreqHz,
+          text: clean,
+        },
+        ...prev.slice(0, 49),
+      ]);
+
+      const cfg = jttyConfigRef.current;
+      audioEngineRef.current?.playJttySequence(clean, 0.26, true, cfg);
+
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: 'jtty:tx', text: clean, jttyConfig: cfg }));
+      }
+
+      const dur = Math.max(700, Math.min(8000, jttyDurationMs(clean, cfg)));
+      digitalTimerRef.current = window.setTimeout(() => {
+        audioEngineRef.current?.stopMorseSequence();
+        pttMicRef.current = endAutomatedTx(pttMicRef.current);
+        setIsSendingJtty(false);
+        if (!pttMicRef.current.isTransmitting) {
+          audioEngineRef.current?.setTransmitting(false);
+          isTransmittingRef.current = false;
+          setIsTransmitting(false);
+        }
+      }, dur);
+    },
+    [callsign, currentFreqHz, clearCwTimers, clearDigitalTimers]
+  );
+
+  const handleLoopbackJtty = useCallback(
+    (decodedText: string, snrRatio: number) => {
+      setJttyFeed((prev) => [
+        {
+          id: `jtty-loop-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+          timestampUtc: nowUtcStamp(),
+          direction: 'SYS',
+          mode: 'JTTY',
+          callsign: 'DSP-LOOP',
+          frequencyHz: currentFreqHz,
+          text: `${decodedText} [JIS-6 ${snrRatio}:1]`,
+        },
+        ...prev.slice(0, 49),
+      ]);
+    },
+    [currentFreqHz]
+  );
+
   const handleSendSstv = useCallback(
     (payload: Omit<SstvFramePayload, 'id' | 'timestampUtc'>) => {
       if (!isPoweredOnRef.current) return;
+      clearCwTimers();
       clearDigitalTimers();
+      isSendingCwRef.current = false;
+      setIsSendingCw(false);
+      setCwTxProgress(0);
+      setIsSendingRtty(false);
+      setIsSendingJtty(false);
+      setIsSendingFt8(false);
       pttMicRef.current = beginAutomatedTx(pttMicRef.current);
       setMode('SSTV');
       setFilterWidthKhz(2.4);
@@ -1934,7 +2151,7 @@ export default function App() {
         }
       }, durationMs);
     },
-    [clearDigitalTimers]
+    [clearCwTimers, clearDigitalTimers]
   );
 
   const handleLoopbackSstv = useCallback(
@@ -1984,7 +2201,15 @@ export default function App() {
       const clean = sanitizeFt8Message(rawMsg);
       if (!clean) return;
 
+      clearCwTimers();
       clearDigitalTimers();
+      isSendingCwRef.current = false;
+      setIsSendingCw(false);
+      setCwTxProgress(0);
+      setIsSendingRtty(false);
+      setIsSendingJtty(false);
+      setIsSendingSstv(false);
+      setSstvTxProgress(0);
       pttMicRef.current = beginAutomatedTx(pttMicRef.current);
       setMode('FT8');
       setFilterWidthKhz(2.4);
@@ -2036,7 +2261,7 @@ export default function App() {
         }
       }, 4400);
     },
-    [activeBand, callsign, currentFreqHz, clearDigitalTimers]
+    [activeBand, callsign, currentFreqHz, clearCwTimers, clearDigitalTimers]
   );
 
   const handleJoinAndTuneStation = useCallback(
@@ -2292,7 +2517,7 @@ export default function App() {
                 setChecklist((c) => ({ ...c, checkedPropagation: true }));
               }}
               qth={qth}
-              stations={evaluatedStations}
+              stations={mapAndBeaconStations}
               currentSwr={currentSwr}
               onLocateMe={handleLocateMe}
               onOpenSettings={() => setShowSettingsModal(true)}
@@ -2426,7 +2651,7 @@ export default function App() {
                 onTogglePttLatch={handleTogglePttLatch}
               />
 
-              {/* Group Switcher: Waterfall, CW, RTTY, SSTV, FT8, Live Cluster, Prop Map */}
+              {/* Group Switcher: Waterfall, CW, RTTY, JTTY, SSTV, FT8, Live Cluster, Prop Map */}
               <CenterModeSwitcher
                 activeTab={activeModuleTab}
                 onChangeTab={setActiveModuleTab}
@@ -2452,7 +2677,6 @@ export default function App() {
                 micRms={micRms}
                 mode={mode}
                 stations={evaluatedStations}
-                beaconStations={waterfallBeaconStations}
                 signalBurstsRef={signalBurstsRef}
                 allGlobalStations={allGlobalStations}
                 spanKhz={spanKhz}
@@ -2496,6 +2720,12 @@ export default function App() {
                   setShowQsoModal(true);
                 }}
                 audioEngine={audioEngineRef.current}
+                jttyFeed={jttyFeed}
+                isSendingJtty={isSendingJtty && isPoweredOn}
+                jttyConfig={jttyConfig}
+                onChangeJttyConfig={setJttyConfig}
+                onSendJtty={handleSendJtty}
+                onLoopbackDecodeJtty={handleLoopbackJtty}
                 sstvRxFrame={sstvRxFrame}
                 sstvRxProgress={sstvRxProgress}
                 sstvRxStats={sstvRxStats}
@@ -2528,9 +2758,10 @@ export default function App() {
                 rotorHeadingDeg={rotorHeadingDeg}
                 band={activeBand}
                 propagation={propagation}
-                stations={evaluatedStations}
+                stations={mapAndBeaconStations}
                 onSelectBand={handleSelectBand}
                 onSetRotorTarget={handleSetRotorTarget}
+                onTuneArrlBeacon={handleTuneArrlBeacon}
                 isRotatable={getAntennaSpec(antennaId).isRotatable}
                 onLocateMe={handleLocateMe}
                 onOpenSettings={() => setShowSettingsModal(true)}
@@ -2620,16 +2851,20 @@ export default function App() {
         currentFrequencyHz={currentFreqHz}
         currentMode={mode}
         currentPowerW={deliveredPowerW}
-        suggestedCallsign={bestInPassband?.station.callsign.replace('/B', '') ?? ''}
+        suggestedCallsign={
+          bestInPassband && !bestInPassband.station.isBeacon
+            ? bestInPassband.station.callsign.replace('/B', '')
+            : ''
+        }
         suggestedGrid={
-          bestInPassband?.station.qth.grid ??
-          (bestInPassband?.station.callsign
-            ? resolveGridForCallsign(
+          bestInPassband && !bestInPassband.station.isBeacon
+            ? bestInPassband.station.qth.grid ??
+              resolveGridForCallsign(
                 bestInPassband.station.callsign.replace('/B', ''),
                 remotePeers,
                 callsignDirectory
               )
-            : '')
+            : ''
         }
         knownStations={remotePeers}
         callsignRecords={callsignDirectory}
@@ -2647,15 +2882,18 @@ export default function App() {
         compressionPct={compressionPct}
         onSave={(next) => {
           const finalCall = callsignPermanent ? callsign : next.callsign;
+          const clampedPower = Math.min(MAX_TX_POWER_W, Math.max(MIN_TX_POWER_W, next.txPowerW));
           setCallsign(finalCall);
           setQth(next.qth);
-          setTxPowerW(Math.min(MAX_TX_POWER_W, Math.max(MIN_TX_POWER_W, next.txPowerW)));
+          setTxPowerW(clampedPower);
           setCompressionPct(next.compressionPct);
           saveStationProfile({
             callsign: finalCall,
             callsignPermanent,
             qth: next.qth,
             qthExplicit: true,
+            txPowerW: clampedPower,
+            powerVersion: 2,
             compressionPct: next.compressionPct,
           });
         }}

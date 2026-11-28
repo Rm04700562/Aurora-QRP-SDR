@@ -598,8 +598,14 @@ export const RttyModule: React.FC<RttyModuleProps> = ({
         />
         {isSendingRtty ? (
           <button
+            key="rtty-stop-btn"
             type="button"
-            onClick={onStopDigitalTx}
+            data-testid="rtty-stop-button"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onStopDigitalTx();
+            }}
             className="flex items-center gap-1 px-2.5 py-1 rounded bg-rose-600 hover:bg-rose-500 text-white font-display font-bold text-[11px] uppercase cursor-pointer whitespace-nowrap shrink-0"
           >
             <Square className="w-3 h-3 fill-current" />
@@ -607,6 +613,7 @@ export const RttyModule: React.FC<RttyModuleProps> = ({
           </button>
         ) : (
           <button
+            key="rtty-send-btn"
             type="submit"
             disabled={!isPoweredOn || !rttyInput.trim()}
             data-testid="rtty-send-button"

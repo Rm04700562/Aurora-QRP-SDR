@@ -2,7 +2,10 @@ import { morseTimeline } from '../radio/physics';
 import {
   encodeFt8Tones,
   generateSstvTestPattern,
+  getJttyMarkSpaceFreqs,
   getRttyMarkSpaceFreqs,
+  JttyCodecConfig,
+  jttyMarkSpaceTimeline,
   RttyCodecConfig,
   rttyMarkSpaceTimeline,
   SSTV_HEIGHT,
@@ -16,6 +19,14 @@ import {
   computeNoiseBlankerParams,
   createNoiseBlankerCurve,
 } from './noiseBlanker';
+import {
+  computeCalibratedAfGain,
+  computeRadioVoiceFilterParams,
+  computeSidetoneGain,
+  createDiodeSaturationCurve,
+  normalizeIncomingRxVoipFrame,
+  processTxMicFrame,
+} from './voiceDsp';
 
 export interface SdrAudioParams {
   afGainPct: number; // 0..100
@@ -31,13 +42,21 @@ export interface SdrAudioParams {
   bestSignalSnrDb: number;
   bestSignalInPassband: boolean;
   auroraFlutter: number;
+  compressionPct?: number; // 0..100
+  isPoweredOn?: boolean;
 }
 
 export class SdrAudioEngine {
   private ctx: AudioContext | null = null;
   private masterGain: GainNode | null = null;
+  private masterLimiter: DynamicsCompressorNode | null = null;
   private sidetoneGain: GainNode | null = null;
+  private rxHighpassFilter: BiquadFilterNode | null = null;
   private bandpassFilter: BiquadFilterNode | null = null;
+  private rxLowpassFilter: BiquadFilterNode | null = null;
+  private rxPresenceFilter: BiquadFilterNode | null = null;
+  private rxVoiceShaper: WaveShaperNode | null = null;
+  private rxAgcCompressor: DynamicsCompressorNode | null = null;
   private notchFilter: BiquadFilterNode | null = null;
   private noiseBlankerShaper: WaveShaperNode | null = null;
   private noiseGain: GainNode | null = null;
@@ -64,7 +83,7 @@ export class SdrAudioEngine {
   private continuousLoopTimer: number | null = null;
 
   private toneTelemetry: {
-    mode: 'IDLE' | 'CW' | 'RTTY' | 'SSTV' | 'FT8';
+    mode: 'IDLE' | 'CW' | 'RTTY' | 'JTTY' | 'SSTV' | 'FT8';
     markActive: boolean;
     freqHz: number;
     activeUntilMs: number;
@@ -75,6 +94,7 @@ export class SdrAudioEngine {
     activeUntilMs: 0,
   };
   private activeRttyPlayback: {
+    mode: 'RTTY' | 'JTTY';
     startMs: number;
     endMs: number;
     segs: Array<{ endOffsetMs: number; freqHz: number; isMark: boolean }>;
@@ -97,11 +117,13 @@ export class SdrAudioEngine {
     filterWidthKhz: 2.4,
     mode: 'USB',
     isTransmitting: false,
-    audioEnabled: false,
+    audioEnabled: true,
     noiseFloorDbm: -120,
     bestSignalSnrDb: 0,
     bestSignalInPassband: false,
     auroraFlutter: 0,
+    compressionPct: 5,
+    isPoweredOn: true,
   };
 
   public ensureContext(): AudioContext | null {
@@ -115,22 +137,59 @@ export class SdrAudioEngine {
       this.noiseBlankerShaper.oversample = 'none';
       this.noiseBlankerShaper.curve = null;
 
+      // Multi-stage communications receiver IF filter chain (320-2750 Hz SSB crystal roof + presence)
+      this.rxHighpassFilter = this.ctx.createBiquadFilter();
+      this.rxHighpassFilter.type = 'highpass';
+      this.rxHighpassFilter.frequency.value = 340;
+      this.rxHighpassFilter.Q.value = 1.45;
+
       this.bandpassFilter = this.ctx.createBiquadFilter();
       this.bandpassFilter.type = 'bandpass';
       this.bandpassFilter.frequency.value = 1350;
       this.bandpassFilter.Q.value = 1.1;
+
+      this.rxLowpassFilter = this.ctx.createBiquadFilter();
+      this.rxLowpassFilter.type = 'lowpass';
+      this.rxLowpassFilter.frequency.value = 2550;
+      this.rxLowpassFilter.Q.value = 1.75;
+
+      this.rxPresenceFilter = this.ctx.createBiquadFilter();
+      this.rxPresenceFilter.type = 'peaking';
+      this.rxPresenceFilter.frequency.value = 1420;
+      this.rxPresenceFilter.Q.value = 1.45;
+      this.rxPresenceFilter.gain.value = 4.5;
+
+      this.rxVoiceShaper = this.ctx.createWaveShaper();
+      this.rxVoiceShaper.oversample = '2x';
+      this.rxVoiceShaper.curve = createDiodeSaturationCurve(0.28);
 
       this.notchFilter = this.ctx.createBiquadFilter();
       this.notchFilter.type = 'notch';
       this.notchFilter.frequency.value = 1000;
       this.notchFilter.Q.value = 12;
 
+      // Communications IF AGC stage normalizes quiet & loud voices across OS platforms before AF Gain
+      this.rxAgcCompressor = this.ctx.createDynamicsCompressor();
+      this.rxAgcCompressor.threshold.value = -24;
+      this.rxAgcCompressor.knee.value = 14;
+      this.rxAgcCompressor.ratio.value = 4.5;
+      this.rxAgcCompressor.attack.value = 0.006;
+      this.rxAgcCompressor.release.value = 0.16;
+
       this.masterGain = this.ctx.createGain();
       this.masterGain.gain.value = 0;
 
-      // Dedicated TX sidetone monitor bus bypasses RX mute so CW/RTTY/FT8/SSTV TX tones are always heard cleanly
+      // Brickwall safety output limiter protects mobile/desktop speakers at high AF Gain
+      this.masterLimiter = this.ctx.createDynamicsCompressor();
+      this.masterLimiter.threshold.value = -2.5;
+      this.masterLimiter.knee.value = 3;
+      this.masterLimiter.ratio.value = 16;
+      this.masterLimiter.attack.value = 0.002;
+      this.masterLimiter.release.value = 0.12;
+
+      // TX sidetone monitor bus obeys operator AF Gain & mute state consistently across all platforms
       this.sidetoneGain = this.ctx.createGain();
-      this.sidetoneGain.gain.value = 0.7;
+      this.sidetoneGain.gain.value = 0;
 
       this.rxAnalyser = this.ctx.createAnalyser();
       this.rxAnalyser.fftSize = 1024;
@@ -147,7 +206,8 @@ export class SdrAudioEngine {
       this.fftScratch = new Float32Array(this.rxAnalyser.frequencyBinCount);
 
       this.sidetoneGain.connect(this.txAnalyser);
-      this.sidetoneGain.connect(this.ctx.destination);
+      this.sidetoneGain.connect(this.masterLimiter);
+      this.masterLimiter.connect(this.ctx.destination);
 
       const bufferSize = this.ctx.sampleRate * 4;
       const noiseBuffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
@@ -194,11 +254,16 @@ export class SdrAudioEngine {
       this.noiseGain.connect(this.noiseBlankerShaper);
       this.impulseSource.connect(this.impulseGain);
       this.impulseGain.connect(this.noiseBlankerShaper);
-      this.noiseBlankerShaper.connect(this.bandpassFilter);
-      this.bandpassFilter.connect(this.notchFilter);
-      this.notchFilter.connect(this.rxAnalyser);
-      this.notchFilter.connect(this.masterGain);
-      this.masterGain.connect(this.ctx.destination);
+      this.noiseBlankerShaper.connect(this.rxHighpassFilter);
+      this.rxHighpassFilter.connect(this.bandpassFilter);
+      this.bandpassFilter.connect(this.rxLowpassFilter);
+      this.rxLowpassFilter.connect(this.rxPresenceFilter);
+      this.rxPresenceFilter.connect(this.rxVoiceShaper);
+      this.rxVoiceShaper.connect(this.notchFilter);
+      this.notchFilter.connect(this.rxAgcCompressor);
+      this.rxAgcCompressor.connect(this.rxAnalyser);
+      this.rxAgcCompressor.connect(this.masterGain);
+      this.masterGain.connect(this.masterLimiter);
 
       this.noiseSource.start();
       this.impulseSource.start();
@@ -238,7 +303,7 @@ export class SdrAudioEngine {
   }
 
   public updateParams(next: SdrAudioParams) {
-    if (!next.isTransmitting && (this.micActive || this.micStream)) {
+    if ((!next.isTransmitting || next.isPoweredOn === false) && (this.micActive || this.micStream)) {
       this.stopMicrophone();
     }
     this.currentParams = next;
@@ -247,36 +312,37 @@ export class SdrAudioEngine {
     }
 
     const now = this.ctx.currentTime;
-    const af = next.audioEnabled && !next.isTransmitting ? Math.pow(next.afGainPct / 100, 1.2) * 0.85 : 0;
-    this.masterGain.gain.setTargetAtTime(af, now, 0.025);
+    const powered = next.isPoweredOn ?? true;
+    const af = computeCalibratedAfGain(next.afGainPct, next.audioEnabled, powered, next.isTransmitting);
+    this.masterGain.gain.setTargetAtTime(af, now, 0.02);
 
     if (this.sidetoneGain) {
-      const side =
-        next.audioEnabled || next.isTransmitting ? Math.max(0.28, (next.afGainPct / 100) * 0.9) : 0;
+      const side = computeSidetoneGain(next.afGainPct, next.audioEnabled, powered);
       this.sidetoneGain.gain.setTargetAtTime(side, now, 0.015);
     }
 
-    const bwHz = Math.max(350, Math.min(6000, next.filterWidthKhz * 1000));
-    const centerHz =
-      next.mode === 'CW'
-        ? 750
-        : next.mode === 'RTTY'
-        ? 2210
-        : next.mode === 'FT8' || next.mode === 'DIGITAL'
-        ? 1500
-        : next.mode === 'SSTV'
-        ? 1850
-        : next.mode === 'FM'
-        ? 1800
-        : 320 + bwHz * 0.42;
-
-    const q =
-      next.mode === 'FM' || next.mode === 'SSTV'
-        ? 0.55
-        : Math.max(0.6, Math.min(6.5, centerHz / Math.max(320, bwHz * 0.8)));
-
-    this.bandpassFilter.frequency.setTargetAtTime(centerHz, now, 0.03);
-    this.bandpassFilter.Q.setTargetAtTime(q, now, 0.03);
+    const voiceParams = computeRadioVoiceFilterParams(next.mode, next.filterWidthKhz);
+    if (this.rxHighpassFilter) {
+      this.rxHighpassFilter.frequency.setTargetAtTime(voiceParams.highpassHz, now, 0.025);
+      this.rxHighpassFilter.Q.setTargetAtTime(voiceParams.highpassQ, now, 0.025);
+    }
+    this.bandpassFilter.frequency.setTargetAtTime(voiceParams.bandpassCenterHz, now, 0.025);
+    this.bandpassFilter.Q.setTargetAtTime(voiceParams.bandpassQ, now, 0.025);
+    if (this.rxLowpassFilter) {
+      this.rxLowpassFilter.frequency.setTargetAtTime(voiceParams.lowpassHz, now, 0.025);
+      this.rxLowpassFilter.Q.setTargetAtTime(voiceParams.lowpassQ, now, 0.025);
+    }
+    if (this.rxPresenceFilter) {
+      this.rxPresenceFilter.frequency.setTargetAtTime(voiceParams.presenceFreqHz, now, 0.025);
+      this.rxPresenceFilter.Q.setTargetAtTime(voiceParams.presenceQ, now, 0.025);
+      this.rxPresenceFilter.gain.setTargetAtTime(voiceParams.presenceGainDb, now, 0.025);
+    }
+    if (this.rxVoiceShaper) {
+      this.rxVoiceShaper.curve =
+        voiceParams.voiceSaturationAmount > 0
+          ? createDiodeSaturationCurve(voiceParams.voiceSaturationAmount)
+          : null;
+    }
 
     if (next.notchPct <= 0) {
       this.notchFilter.Q.setTargetAtTime(0.001, now, 0.03);
@@ -291,7 +357,9 @@ export class SdrAudioEngine {
     const bandNoiseScale = Math.max(0.7, Math.min(1.55, 1 + (next.noiseFloorDbm + 118) / 30));
     const modeHissBoost = next.mode === 'FM' ? 1.35 : next.mode === 'CW' ? 0.75 : 0.95;
     const agcDuck = next.bestSignalInPassband && next.bestSignalSnrDb > 10 ? 0.48 : 1.0;
-    const targetNoise = 0.18 * rfScale * nrAttenuation * bandNoiseScale * modeHissBoost * agcDuck;
+    const targetNoise = powered
+      ? 0.16 * rfScale * nrAttenuation * bandNoiseScale * modeHissBoost * agcDuck
+      : 0;
     this.noiseGain.gain.setTargetAtTime(targetNoise, now, 0.05);
 
     const nbParams = computeNoiseBlankerParams(next.noiseBlankerPct);
@@ -299,19 +367,32 @@ export class SdrAudioEngine {
       this.noiseBlankerShaper.curve = createNoiseBlankerCurve(nbParams.pct);
     }
     if (this.impulseGain) {
-      const targetImpulse = 0.22 * rfScale * bandNoiseScale * agcDuck * nbParams.impulseAttenuation;
+      const targetImpulse = powered
+        ? 0.2 * rfScale * bandNoiseScale * agcDuck * nbParams.impulseAttenuation
+        : 0;
       this.impulseGain.gain.setTargetAtTime(targetImpulse, now, 0.03);
     }
   }
 
   public getDiagnostics() {
     const nb = computeNoiseBlankerParams(this.currentParams.noiseBlankerPct);
+    const voiceParams = computeRadioVoiceFilterParams(
+      this.currentParams.mode,
+      this.currentParams.filterWidthKhz
+    );
     return {
       hasContext: Boolean(this.ctx),
       contextState: this.ctx?.state ?? 'uninitialized',
+      afGainPct: this.currentParams.afGainPct,
+      audioEnabled: this.currentParams.audioEnabled,
       masterGain: this.masterGain?.gain.value ?? 0,
+      sidetoneGain: this.sidetoneGain?.gain.value ?? 0,
       noiseGain: this.noiseGain?.gain.value ?? 0,
       impulseGain: this.impulseGain?.gain.value ?? 0,
+      rxHighpassHz: voiceParams.highpassHz,
+      rxLowpassHz: voiceParams.lowpassHz,
+      rxPresenceGainDb: voiceParams.presenceGainDb,
+      voiceShaperActive: voiceParams.voiceSaturationAmount > 0,
       noiseBlankerPct: nb.pct,
       noiseBlankerActive: nb.active,
       noiseBlankerThreshold: nb.gateThreshold,
@@ -397,32 +478,26 @@ export class SdrAudioEngine {
       this.micProcessor = ctx.createScriptProcessor(2048, 1, 1);
 
       const targetRate = 16000;
-      const ratio = ctx.sampleRate / targetRate;
 
       this.micProcessor.onaudioprocess = (ev) => {
-        if (!this.micActive || !this.currentParams.isTransmitting) return;
+        if (!this.micActive || !this.currentParams.isTransmitting || this.currentParams.isPoweredOn === false) {
+          return;
+        }
         const input = ev.inputBuffer.getChannelData(0);
-        let sumSq = 0;
-        for (let i = 0; i < input.length; i++) {
-          sumSq += input[i] * input[i];
-        }
-        const rms = Math.sqrt(sumSq / input.length);
-        const db = rms > 0.0001 ? Math.max(-55, Math.min(0, 20 * Math.log10(rms))) : -55;
-        const alcPct = Math.min(100, Math.round(rms * 240));
-        this.onMicLevel?.(Number(db.toFixed(1)), alcPct);
+        const processed = processTxMicFrame(
+          input,
+          ctx.sampleRate,
+          this.currentParams.compressionPct ?? 5,
+          targetRate
+        );
+        this.onMicLevel?.(processed.db, processed.alcPct);
 
-        const outLen = Math.floor(input.length / ratio);
-        const pcm16 = new Int16Array(outLen);
-        for (let i = 0; i < outLen; i++) {
-          const sample = Math.max(-1, Math.min(1, input[Math.floor(i * ratio)]));
-          pcm16[i] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
-        }
-        const bytes = new Uint8Array(pcm16.buffer);
+        const bytes = new Uint8Array(processed.pcm16.buffer);
         let binary = '';
         for (let i = 0; i < bytes.byteLength; i++) {
           binary += String.fromCharCode(bytes[i]);
         }
-        this.onPcmFrame?.(btoa(binary), targetRate, rms);
+        this.onPcmFrame?.(btoa(binary), targetRate, processed.rms);
       };
 
       const silent = ctx.createGain();
@@ -477,7 +552,12 @@ export class SdrAudioEngine {
     freqOffsetHz: number;
     inPassband: boolean;
   }) {
-    if (!this.currentParams.audioEnabled || this.currentParams.isTransmitting || !params.inPassband) {
+    if (
+      !this.currentParams.audioEnabled ||
+      this.currentParams.isPoweredOn === false ||
+      this.currentParams.isTransmitting ||
+      !params.inPassband
+    ) {
       return;
     }
     const ctx = this.ensureContext();
@@ -491,20 +571,7 @@ export class SdrAudioEngine {
     const int16 = new Int16Array(bytes.buffer);
     if (int16.length === 0) return;
 
-    const float32 = new Float32Array(int16.length);
-    // Keep voices clearly audible even on weak QRP paths while still reflecting SNR
-    const snrGain = Math.max(0.32, Math.min(1.45, (params.snrDb + 18) / 28));
-    const flutterDepth = params.auroraFlutter;
-
-    for (let i = 0; i < int16.length; i++) {
-      let s = int16[i] / 32768;
-      if (flutterDepth > 0.05) {
-        const mod = 1 - flutterDepth * 0.45 * (0.5 + 0.5 * Math.sin(i * 0.065));
-        s *= mod;
-      }
-      float32[i] = Math.max(-0.98, Math.min(0.98, s * snrGain));
-    }
-
+    const float32 = normalizeIncomingRxVoipFrame(int16, params.snrDb, params.auroraFlutter);
     const nbResult = applyNoiseBlankerBuffer(float32, this.currentParams.noiseBlankerPct);
     const buffer = ctx.createBuffer(1, nbResult.output.length, params.sampleRate || 16000);
     buffer.getChannelData(0).set(nbResult.output);
@@ -515,7 +582,10 @@ export class SdrAudioEngine {
     const detuneCents = Math.max(-600, Math.min(600, params.freqOffsetHz * 0.35));
     src.detune.value = detuneCents;
 
-    src.connect(this.noiseBlankerShaper ?? this.bandpassFilter);
+    src.connect(this.noiseBlankerShaper ?? this.rxHighpassFilter ?? this.bandpassFilter);
+    src.onended = () => {
+      src.disconnect();
+    };
 
     const now = ctx.currentTime;
     if (this.nextPlaybackTime < now || this.nextPlaybackTime > now + 0.35) {
@@ -557,7 +627,7 @@ export class SdrAudioEngine {
       }
       const cur = segs[lo] ?? segs[segs.length - 1];
       return {
-        mode: 'RTTY' as const,
+        mode: this.activeRttyPlayback.mode,
         markActive: cur ? cur.isMark : true,
         freqHz: cur ? cur.freqHz : 2125,
       };
@@ -671,7 +741,7 @@ export class SdrAudioEngine {
     const execute = () => {
       const dest = isSidetone
         ? this.sidetoneGain ?? ctx.destination
-        : this.bandpassFilter ?? this.masterGain ?? ctx.destination;
+        : this.rxHighpassFilter ?? this.bandpassFilter ?? this.masterGain ?? ctx.destination;
       run(ctx, dest);
     };
 
@@ -791,12 +861,82 @@ export class SdrAudioEngine {
 
       const nowMs = Date.now() + 20;
       this.activeRttyPlayback = {
+        mode: 'RTTY',
         startMs: nowMs,
         endMs: nowMs + totalMs + 80,
         segs: indexedSegs,
       };
       this.toneTelemetry = {
         mode: 'RTTY',
+        markActive: true,
+        freqHz: markHz,
+        activeUntilMs: nowMs + totalMs + 80,
+      };
+      g.gain.setTargetAtTime(0, t, 0.006);
+
+      osc.onended = () => {
+        if (this.activeToneOsc === osc) {
+          this.activeToneOsc = null;
+          this.activeToneGain = null;
+          this.activeRttyPlayback = null;
+          this.toneTelemetry = { mode: 'IDLE', markActive: true, freqHz: 0, activeUntilMs: 0 };
+        }
+        osc.disconnect();
+        g.disconnect();
+      };
+      osc.start(startT);
+      osc.stop(t + 0.05);
+    }, isSidetone);
+  }
+
+  /**
+   * Plays authentic 6-unit JIS/Latin JTTY FSK tone stream (start + 6 data bits + 1.5 stop).
+   */
+  public playJttySequence(
+    text: string,
+    gainLevel = 0.18,
+    isSidetone = false,
+    config: Partial<JttyCodecConfig> = {}
+  ) {
+    const segs = jttyMarkSpaceTimeline(text, config);
+    if (segs.length === 0) return;
+
+    const { markHz } = getJttyMarkSpaceFreqs(config);
+    this.stopMorseSequence();
+    this.scheduleTimedSequence((ctx, dest) => {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = markHz;
+      g.gain.value = 0;
+      osc.connect(g);
+      g.connect(dest);
+
+      this.activeToneOsc = osc;
+      this.activeToneGain = g;
+
+      let t = ctx.currentTime + 0.02;
+      const startT = t;
+      let totalMs = 0;
+      const indexedSegs: Array<{ endOffsetMs: number; freqHz: number; isMark: boolean }> = [];
+      g.gain.setTargetAtTime(gainLevel, startT, 0.005);
+
+      for (const seg of segs) {
+        osc.frequency.setValueAtTime(seg.freqHz, t);
+        totalMs += seg.durationMs;
+        indexedSegs.push({ endOffsetMs: totalMs, freqHz: seg.freqHz, isMark: seg.isMark });
+        t += seg.durationMs / 1000;
+      }
+
+      const nowMs = Date.now() + 20;
+      this.activeRttyPlayback = {
+        mode: 'JTTY',
+        startMs: nowMs,
+        endMs: nowMs + totalMs + 80,
+        segs: indexedSegs,
+      };
+      this.toneTelemetry = {
+        mode: 'JTTY',
         markActive: true,
         freqHz: markHz,
         activeUntilMs: nowMs + totalMs + 80,

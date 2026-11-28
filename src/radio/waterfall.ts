@@ -37,11 +37,9 @@ export interface SpectrumSampleInput {
   micRms: number;
   nowMs: number;
   stations: Array<{ station: RemoteStation; evalResult: SignalEvaluation }>;
-  beacons?: Array<{ station: RemoteStation; evalResult: SignalEvaluation }>;
-  showBeacons?: boolean;
   bursts?: WaterfallSignalBurst[];
   toneTelemetry?: {
-    mode: 'IDLE' | 'CW' | 'RTTY' | 'SSTV' | 'FT8';
+    mode: 'IDLE' | 'CW' | 'RTTY' | 'JTTY' | 'SSTV' | 'FT8';
     markActive: boolean;
     freqHz: number;
   };
@@ -58,7 +56,7 @@ export interface SpectrumSampleInput {
 export interface VisibleSignalMarker {
   x: number;
   freqHz: number;
-  kind: 'live' | 'beacon';
+  kind: 'live';
 }
 
 export interface CollectVisibleSignalMarkersInput {
@@ -70,42 +68,11 @@ export interface CollectVisibleSignalMarkersInput {
   nowMs: number;
   stations: Array<{ station: RemoteStation; evalResult: SignalEvaluation }>;
   bursts?: WaterfallSignalBurst[];
-  beacons?: Array<{ station: RemoteStation; evalResult: SignalEvaluation }>;
-  showBeacons?: boolean;
-}
-
-const BEACON_KEY_PATTERN = [1, 1, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 0];
-
-/**
- * Computes realistic NCDXF staggered duty cycle and Morse keying envelope for a propagation beacon.
- */
-export function computeBeaconKeyingEnvelope(
-  station: RemoteStation,
-  nowMs: number
-): { windowOpen: boolean; markActive: boolean } {
-  const sec = Math.floor(nowMs / 1000);
-  // Center-frequency 20m voice/test beacon (DL2QRP/B @ 14.250 MHz) transmits 4s of every 12s
-  // so center VFO stays clear for operator traffic most of the time.
-  if (station.id === 'beacon-dl2qrp') {
-    const windowOpen = sec % 12 < 4;
-    return { windowOpen, markActive: windowOpen };
-  }
-
-  if (station.mode === 'CW') {
-    const phaseSlots = Math.floor(station.frequencyHz / 100) % BEACON_KEY_PATTERN.length;
-    const slot = (Math.floor(nowMs / 95) + phaseSlots) % BEACON_KEY_PATTERN.length;
-    const markActive = BEACON_KEY_PATTERN[slot] === 1;
-    return { windowOpen: true, markActive };
-  }
-
-  const phaseSec = Math.floor(station.frequencyHz / 1000) % 11;
-  const windowOpen = (sec + phaseSec) % 11 < 7;
-  return { windowOpen, markActive: windowOpen };
 }
 
 /**
- * Collects deduplicated x-positions for visible incoming live stations and active band beacons
- * strictly without exposing any callsign labels.
+ * Collects deduplicated x-positions for visible real incoming stations and real RF bursts
+ * strictly without exposing any callsign labels or synthetic beacons.
  */
 export function collectVisibleSignalMarkers(
   input: CollectVisibleSignalMarkersInput
@@ -115,14 +82,13 @@ export function collectVisibleSignalMarkers(
   const maxX = input.canvasWidth - WATERFALL_PLOT_RIGHT - 2;
   if (maxX <= minX) return markers;
 
-  const isDuplicate = (x: number, kind: 'live' | 'beacon') =>
-    markers.some(
-      (m) => Math.abs(m.x - x) < 6 && (m.kind === kind || kind === 'beacon')
-    );
+  const isDuplicate = (x: number) => markers.some((m) => Math.abs(m.x - x) < 6);
 
-  // 1. Live connected stations currently transmitting on this band
+  // 1. Real connected stations currently transmitting on this band
   for (const item of input.stations) {
-    if (item.station.band !== input.band || !item.station.isTransmitting) continue;
+    if (item.station.band !== input.band || !item.station.isTransmitting || item.station.isBeacon) {
+      continue;
+    }
     const x = frequencyHzToPixelX(
       item.station.frequencyHz,
       input.canvasWidth,
@@ -130,12 +96,12 @@ export function collectVisibleSignalMarkers(
       input.spanKhz,
       input.zoom
     );
-    if (x >= minX && x <= maxX && !isDuplicate(x, 'live')) {
+    if (x >= minX && x <= maxX && !isDuplicate(x)) {
       markers.push({ x, freqHz: item.station.frequencyHz, kind: 'live' });
     }
   }
 
-  // 2. Active incoming RF bursts (VoIP, CW, RTTY, FT8, SSTV, out-of-passband rf:activity)
+  // 2. Active real incoming RF bursts (VoIP, CW, RTTY, FT8, SSTV, out-of-passband rf:activity)
   if (input.bursts) {
     for (const burst of input.bursts) {
       if (burst.isSelf || burst.band !== input.band || burst.expiresAtMs <= input.nowMs) continue;
@@ -150,27 +116,8 @@ export function collectVisibleSignalMarkers(
         input.spanKhz,
         input.zoom
       );
-      if (x >= minX && x <= maxX && !isDuplicate(x, 'live')) {
+      if (x >= minX && x <= maxX && !isDuplicate(x)) {
         markers.push({ x, freqHz: rfTargetHz, kind: 'live' });
-      }
-    }
-  }
-
-  // 3. Active propagation beacons on this band (when enabled)
-  if (input.showBeacons !== false && input.beacons) {
-    for (const item of input.beacons) {
-      if (item.station.band !== input.band || !item.station.isTransmitting) continue;
-      const env = computeBeaconKeyingEnvelope(item.station, input.nowMs);
-      if (!env.windowOpen) continue;
-      const x = frequencyHzToPixelX(
-        item.station.frequencyHz,
-        input.canvasWidth,
-        input.centerFreqHz,
-        input.spanKhz,
-        input.zoom
-      );
-      if (x >= minX && x <= maxX && !isDuplicate(x, 'beacon')) {
-        markers.push({ x, freqHz: item.station.frequencyHz, kind: 'beacon' });
       }
     }
   }
@@ -440,7 +387,7 @@ export function modeSpectralShape(
 /**
  * Generates a complete RF spectrum slice in dBm across [minFreq .. maxFreq].
  * Integrates live Web Audio baseband FFT (when active), real connected RX stations,
- * transient RX/TX bursts, active-band beacons, local TX RF modulation, NR smoothing, NB QRN blanking, and Notch cut.
+ * transient RX/TX bursts, local TX RF modulation, NR smoothing, NB QRN blanking, and Notch cut.
  */
 export function synthesizeSpectrumSlice(input: SpectrumSampleInput): Float32Array {
   const bins = input.bins ?? WATERFALL_BINS;
@@ -509,9 +456,9 @@ export function synthesizeSpectrumSlice(input: SpectrumSampleInput): Float32Arra
       }
     }
 
-    // 2. Real connected stations actively transmitting on this band (including marginal/off-beam paths)
+    // 2. Real connected incoming stations actively transmitting on this band (never beacons)
     for (const item of input.stations) {
-      if (!item.station.isTransmitting) continue;
+      if (!item.station.isTransmitting || item.station.isBeacon) continue;
       if (item.station.band !== input.band) continue;
       const signedOffset = binFreq - item.station.frequencyHz;
       const distHz = Math.abs(signedOffset);
@@ -546,36 +493,6 @@ export function synthesizeSpectrumSlice(input: SpectrumSampleInput): Float32Arra
           const targetDbm = burst.isSelf
             ? Math.max(-24, burst.powerDbm)
             : Math.max(baseFloor + 14, burst.powerDbm);
-          if (targetDbm > dbm) {
-            dbm = dbm + (targetDbm - dbm) * shape;
-          }
-        }
-      }
-    }
-
-    // 4. Active-band propagation beacons (when enabled; keyed with realistic NCDXF/Morse patterns)
-    if (input.showBeacons !== false && input.beacons) {
-      for (const item of input.beacons) {
-        if (!item.station.isTransmitting || item.station.band !== input.band) continue;
-        const env = computeBeaconKeyingEnvelope(item.station, input.nowMs);
-        if (!env.windowOpen) continue;
-        const signedOffset = binFreq - item.station.frequencyHz;
-        const distHz = Math.abs(signedOffset);
-        const shape = modeSpectralShape(
-          distHz,
-          signedOffset,
-          item.station.mode,
-          input.nowMs,
-          item.station.frequencyHz,
-          {
-            markActive: item.station.mode === 'CW' ? env.markActive : undefined,
-            minKernelHz,
-          }
-        );
-        if (shape > 0.01) {
-          const qsbDb = 1.8 * Math.sin(input.nowMs * 0.004 + item.station.frequencyHz * 0.01);
-          const minBeaconPeak = baseFloor + (item.evalResult.propagationOpen ? 15 : 6);
-          const targetDbm = Math.max(minBeaconPeak, item.evalResult.rxPowerDbm) + qsbDb;
           if (targetDbm > dbm) {
             dbm = dbm + (targetDbm - dbm) * shape;
           }

@@ -14,6 +14,7 @@ import {
   evaluateBandCondition,
   getAntennaSpec,
   getEffectiveAntennaBandPerformance,
+  getLeftBandButtonClass,
   PROPAGATION_PRESETS,
 } from '../radio/physics';
 import { AntennaId, BandId, PropagationConditions, QthLocation, RemoteStation, SignalEvaluation } from '../types/radio';
@@ -519,19 +520,18 @@ export const LeftControlColumn: React.FC<LeftControlColumnProps> = ({
         <div className="grid grid-cols-5 gap-1" role="listbox" aria-label="Amateur Radio Bands">
           {BANDS.map((band) => {
             const active = band.id === activeBand;
+            const cond = evaluateBandCondition(band.id, propagation, qth);
             return (
               <button
                 key={band.id}
                 type="button"
                 onClick={() => onSelectBand(band.id)}
-                title={`${band.label}: ${band.rangeLabel} MHz`}
-                className={`py-0.5 px-0 rounded text-[10px] font-mono-tabular tracking-tight transition-colors cursor-pointer border text-center ${
-                  active
-                    ? 'bg-sky-500 border-sky-400 text-slate-950 font-bold shadow-[0_0_8px_rgba(34,184,255,0.3)]'
-                    : 'bg-[#0a1019] border-[#1f3045] text-slate-300 hover:border-sky-400/50 hover:text-white'
-                }`}
+                data-band-id={band.id}
+                data-prop-rating={cond.rating}
+                title={`${band.label}: ${band.rangeLabel} MHz · Propagation: ${cond.rating} (QRN ${cond.noiseDbm} dBm)`}
+                className={`py-0.5 px-0 rounded text-[10px] font-mono-tabular tracking-tight transition-colors cursor-pointer border text-center ${getLeftBandButtonClass(active)}`}
                 aria-pressed={active}
-                aria-label={`${band.label} ${band.rangeLabel}`}
+                aria-label={`${band.label} ${band.rangeLabel} ${cond.rating}`}
               >
                 {band.label}
               </button>

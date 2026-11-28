@@ -25,6 +25,7 @@ export type WorkspaceModuleTab =
   | 'waterfall'
   | 'cw'
   | 'rtty'
+  | 'jtty'
   | 'sstv'
   | 'ft8'
   | 'cluster'
@@ -204,13 +205,22 @@ export interface RttyConfig {
   uos: boolean;
 }
 
+export interface JttyConfig {
+  baudRate: 45.45 | 50 | 75;
+  shiftHz: 170 | 425 | 850;
+  markHz: 1275 | 2125;
+  kanaShift: boolean;
+  fineOffsetHz: number;
+  reversePolarity: boolean;
+}
+
 export type SstvModeId = 'Robot 36' | 'Martin M1' | 'Scottie S1' | 'PD 50';
 
 export interface DigitalFeedLine {
   id: string;
   timestampUtc: string;
   direction: 'RX' | 'TX' | 'SYS';
-  mode: 'CW' | 'RTTY' | 'FT8' | 'DIGITAL';
+  mode: 'CW' | 'RTTY' | 'JTTY' | 'FT8' | 'DIGITAL';
   callsign: string;
   frequencyHz: number;
   snrDb?: number;

@@ -32,6 +32,7 @@ import {
   resolveGridForCallsign,
   resolvePrefixCountryInfo,
   sanitizeFt8Message,
+  sanitizeJttyText,
   sanitizeRttyText,
 } from './src/radio/digitalModes';
 
@@ -1094,6 +1095,30 @@ async function startServer() {
           qth: conn.station.qth,
           text: clean,
           rttyConfig: msg.rttyConfig && typeof msg.rttyConfig === 'object' ? msg.rttyConfig : undefined,
+          timestampUtc: nowUtcLabel(),
+        });
+      } else if (msgType === 'jtty:tx') {
+        if (typeof msg.text !== 'string') return;
+        const clean = sanitizeJttyText(msg.text);
+        if (!clean) return;
+        const shiftHz =
+          msg.jttyConfig && typeof (msg.jttyConfig as { shiftHz?: unknown }).shiftHz === 'number'
+            ? Number((msg.jttyConfig as { shiftHz: number }).shiftHz)
+            : 170;
+        relayBandRfActivity(clientId, conn.station, {
+          mode: 'RTTY',
+          rttyShiftHz: shiftHz,
+          durationMs: 2400,
+        });
+        relayToRoomPeers(clientId, conn.station, {
+          type: 'jtty:tx',
+          fromId: clientId,
+          callsign: conn.station.callsign,
+          band: conn.station.band,
+          frequencyHz: conn.station.frequencyHz,
+          qth: conn.station.qth,
+          text: clean,
+          jttyConfig: msg.jttyConfig && typeof msg.jttyConfig === 'object' ? msg.jttyConfig : undefined,
           timestampUtc: nowUtcLabel(),
         });
       } else if (msgType === 'ft8:tx') {

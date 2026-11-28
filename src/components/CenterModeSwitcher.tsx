@@ -1,9 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import {
   Activity,
+  BookPlus,
   Camera,
   Globe,
   Globe2,
+  Keyboard,
   KeyRound,
   Radio,
   Send,
@@ -13,6 +15,7 @@ import {
 import { SdrAudioEngine } from '../audio/sdrAudioEngine';
 import {
   buildFt8AutoReplyPayload,
+  buildFt8RowClickDraft,
   canAutoReplyFt8Row,
   findNearestRttySignalOffsetHz,
   formatFt8Cq,
@@ -21,6 +24,7 @@ import {
   getStandardFt8Frequency,
   parseFt8Message,
   resolveFt8ReportTarget,
+  sanitizeFt8DraftInput,
   sanitizeFt8Message,
 } from '../radio/digitalModes';
 import {
@@ -34,6 +38,7 @@ import {
   DigitalFeedLine,
   DxClusterSpot,
   Ft8DecodedLine,
+  JttyConfig,
   PropagationConditions,
   QthLocation,
   RadioMode,
@@ -44,6 +49,7 @@ import {
   WorkspaceModuleTab,
 } from '../types/radio';
 import { WaterfallSignalBurst } from '../radio/waterfall';
+import { JttyModule } from './JttyModule';
 import { PropagationWorldMap } from './PropagationWorldMap';
 import { RttyModule } from './RttyModule';
 import { SpectrumWaterfall } from './SpectrumWaterfall';
@@ -76,7 +82,6 @@ interface CenterModeSwitcherProps {
   micRms: number;
   mode: RadioMode;
   stations: Array<{ station: RemoteStation; evalResult: SignalEvaluation }>;
-  beaconStations?: Array<{ station: RemoteStation; evalResult: SignalEvaluation }>;
   signalBurstsRef?: React.RefObject<WaterfallSignalBurst[]>;
   allGlobalStations: RemoteStation[];
   spanKhz: number;
@@ -109,6 +114,14 @@ interface CenterModeSwitcherProps {
   onStopDigitalTx: () => void;
   onLogQso?: (dxCall: string, mode: RadioMode) => void;
   audioEngine: SdrAudioEngine | null;
+
+  // JTTY module props
+  jttyFeed: DigitalFeedLine[];
+  isSendingJtty: boolean;
+  jttyConfig: JttyConfig;
+  onChangeJttyConfig: (next: JttyConfig) => void;
+  onSendJtty: (text: string) => void;
+  onLoopbackDecodeJtty: (decodedText: string, snrRatio: number) => void;
 
   // SSTV module props
   sstvRxFrame: SstvFramePayload | null;
@@ -151,6 +164,7 @@ const TABS: Array<{ id: WorkspaceModuleTab; label: string; icon: React.Component
   { id: 'waterfall', label: 'Waterfall', icon: Activity },
   { id: 'cw', label: 'CW', icon: KeyRound },
   { id: 'rtty', label: 'RTTY', icon: Terminal },
+  { id: 'jtty', label: 'JTTY', icon: Keyboard },
   { id: 'sstv', label: 'SSTV', icon: Camera },
   { id: 'ft8', label: 'FT8', icon: Radio },
   { id: 'cluster', label: 'Live Cluster', icon: Globe },
@@ -180,7 +194,6 @@ export const CenterModeSwitcher: React.FC<CenterModeSwitcherProps> = ({
   micRms,
   mode,
   stations,
-  beaconStations,
   signalBurstsRef,
   allGlobalStations,
   spanKhz,
@@ -209,6 +222,12 @@ export const CenterModeSwitcher: React.FC<CenterModeSwitcherProps> = ({
   onStopDigitalTx,
   onLogQso,
   audioEngine,
+  jttyFeed,
+  isSendingJtty,
+  jttyConfig,
+  onChangeJttyConfig,
+  onSendJtty,
+  onLoopbackDecodeJtty,
   sstvRxFrame,
   sstvRxProgress,
   sstvRxStats,
@@ -297,7 +316,7 @@ export const CenterModeSwitcher: React.FC<CenterModeSwitcherProps> = ({
     >
       {/* Group Switcher Tab Header */}
       <div className="flex flex-wrap items-center justify-between gap-1 border-b border-[#1c2c40] pb-1">
-        <div className="flex flex-wrap items-center gap-1" role="tablist" aria-label="Operating Modules">
+        <div className="flex flex-wrap items-center gap-0.5" role="tablist" aria-label="Operating Modules">
           {TABS.map((t) => {
             const Icon = t.icon;
             const active = activeTab === t.id;
@@ -309,13 +328,13 @@ export const CenterModeSwitcher: React.FC<CenterModeSwitcherProps> = ({
                 aria-selected={active}
                 data-testid={`module-tab-${t.id}`}
                 onClick={() => onChangeTab(t.id)}
-                className={`flex items-center gap-1 px-2 py-0.5 rounded text-[10.5px] font-display font-semibold tracking-wider uppercase border transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+                className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-display font-semibold tracking-wider uppercase border transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                   active
                     ? 'bg-sky-500 border-sky-400 text-slate-950 shadow-[0_0_8px_rgba(34,184,255,0.3)]'
                     : 'bg-[#0b121c] border-[#213248] text-slate-300 hover:border-sky-400/50 hover:text-white'
                 }`}
               >
-                <Icon className="w-3 h-3" aria-hidden="true" />
+                <Icon className="w-2.5 h-2.5" aria-hidden="true" />
                 <span>{t.label}</span>
                 {t.id === 'cluster' && allGlobalStations.length > 0 && (
                   <span
@@ -357,7 +376,6 @@ export const CenterModeSwitcher: React.FC<CenterModeSwitcherProps> = ({
           micRms={micRms}
           mode={mode}
           stations={stations}
-          beaconStations={beaconStations}
           signalBurstsRef={signalBurstsRef}
           audioEngine={audioEngine}
           spanKhz={spanKhz}
@@ -573,7 +591,28 @@ export const CenterModeSwitcher: React.FC<CenterModeSwitcherProps> = ({
         />
       )}
 
-      {/* TAB 4: SSTV MODULE */}
+      {/* TAB 4: JTTY MODULE (6-Unit Japanese JIS / Katakana-Latin Teleprinter) */}
+      {activeTab === 'jtty' && (
+        <JttyModule
+          isPoweredOn={isPoweredOn}
+          callsign={callsign}
+          qth={qth}
+          band={band}
+          frequencyHz={frequencyHz}
+          jttyFeed={jttyFeed}
+          isSendingJtty={isSendingJtty}
+          jttyConfig={jttyConfig}
+          onChangeJttyConfig={onChangeJttyConfig}
+          onSendJtty={onSendJtty}
+          onLoopbackDecodeJtty={onLoopbackDecodeJtty}
+          onStopDigitalTx={onStopDigitalTx}
+          onTuneToFrequency={onTuneToFrequency}
+          onLogQso={onLogQso}
+          audioEngine={audioEngine}
+        />
+      )}
+
+      {/* TAB 5: SSTV MODULE */}
       {activeTab === 'sstv' && (
         <SstvModule
           isPoweredOn={isPoweredOn}
@@ -594,7 +633,7 @@ export const CenterModeSwitcher: React.FC<CenterModeSwitcherProps> = ({
         />
       )}
 
-      {/* TAB 5: FT8 / DIGITAL */}
+      {/* TAB 6: FT8 / DIGITAL */}
       {activeTab === 'ft8' && (
         <div className="flex flex-col gap-1.5 flex-1 min-h-0" data-testid="module-panel-ft8">
           <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] font-mono-tabular">
@@ -617,13 +656,35 @@ export const CenterModeSwitcher: React.FC<CenterModeSwitcherProps> = ({
               </div>
             </div>
 
-            <button
-              type="button"
-              onClick={() => onTuneToFrequency(getStandardFt8Frequency(band), 'FT8')}
-              className="px-1.5 py-0.5 rounded border border-[#24364d] bg-[#0a1019] hover:border-sky-400 text-sky-300 cursor-pointer"
-            >
-              QSY {band} FT8 ({(getStandardFt8Frequency(band) / 1_000_000).toFixed(3)})
-            </button>
+            <div className="flex items-center gap-1">
+              {onLogQso && (
+                <button
+                  type="button"
+                  data-testid="ft8-log-qso-button"
+                  disabled={!isPoweredOn}
+                  onClick={() =>
+                    onLogQso(resolvedFt8Target?.dxCall || ft8DxCall || 'DX1AA', 'FT8')
+                  }
+                  className="flex items-center gap-0.5 px-1.5 py-0.5 rounded border border-sky-500/40 bg-sky-500/10 hover:bg-sky-500/25 text-sky-200 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                  title="Log FT8 QSO to station logbook"
+                >
+                  <BookPlus className="w-2.5 h-2.5" />
+                  <span>+Log</span>
+                </button>
+              )}
+              <button
+                type="button"
+                data-testid="ft8-qsy-button"
+                disabled={!isPoweredOn}
+                onClick={() => {
+                  if (!isPoweredOn) return;
+                  onTuneToFrequency(getStandardFt8Frequency(band), 'FT8');
+                }}
+                className="px-1.5 py-0.5 rounded border border-[#24364d] bg-[#0a1019] hover:border-sky-400 text-sky-300 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                QSY {band} FT8 ({(getStandardFt8Frequency(band) / 1_000_000).toFixed(3)})
+              </button>
+            </div>
           </div>
 
           {/* Decoded FT8 Messages Table */}
@@ -644,6 +705,10 @@ export const CenterModeSwitcher: React.FC<CenterModeSwitcherProps> = ({
             ) : (
               ft8Log.map((row) => {
                 const showReplyBtn = canAutoReplyFt8Row(row, callsign);
+                const canClickDraft =
+                  row.direction === 'RX' &&
+                  Boolean(row.callsign) &&
+                  row.callsign.toUpperCase() !== callsign.toUpperCase();
                 return (
                   <div
                     key={row.id}
@@ -664,23 +729,25 @@ export const CenterModeSwitcher: React.FC<CenterModeSwitcherProps> = ({
                     <div className="col-span-7 sm:col-span-6 flex items-center justify-between gap-1.5 min-w-0">
                       <button
                         type="button"
+                        disabled={!isPoweredOn || !canClickDraft}
                         onClick={() => {
-                          if (row.callsign && row.callsign !== callsign) {
-                            const draft = buildFt8AutoReplyPayload(
-                              row,
-                              callsign,
-                              qth.grid,
-                              ft8AudioFreq
-                            );
-                            setFt8DxCall(draft.dxCall);
-                            setFt8Message(draft.message);
-                            setFt8AudioFreq(draft.audioFreqHz);
-                          }
+                          if (!isPoweredOn || !canClickDraft) return;
+                          const draft = buildFt8RowClickDraft(
+                            row,
+                            callsign,
+                            qth.grid,
+                            ft8AudioFreq
+                          );
+                          setFt8DxCall(draft.dxCall);
+                          setFt8Message(draft.message);
+                          setFt8AudioFreq(draft.audioFreqHz);
                         }}
-                        className="flex-1 min-w-0 text-left truncate cursor-pointer hover:underline"
+                        className={`flex-1 min-w-0 text-left truncate ${
+                          canClickDraft && isPoweredOn ? 'cursor-pointer hover:underline' : 'cursor-default'
+                        }`}
                         title={
-                          row.callsign && row.callsign !== callsign
-                            ? `Draft FT8 reply to ${row.callsign}`
+                          canClickDraft
+                            ? `Draft next FT8 exchange with ${row.callsign}`
                             : row.message
                         }
                       >
@@ -729,17 +796,23 @@ export const CenterModeSwitcher: React.FC<CenterModeSwitcherProps> = ({
           >
             <button
               type="button"
-              onClick={() => setFt8Message(formatFt8Cq(callsign, qth.grid))}
-              className="px-1.5 py-1 rounded border border-[#24364d] bg-[#0a1019] text-[10px] font-mono-tabular text-emerald-300 cursor-pointer"
+              data-testid="ft8-cq-button"
+              disabled={!isPoweredOn || isSendingFt8}
+              onClick={() => {
+                if (!isPoweredOn || isSendingFt8) return;
+                setFt8DxCall('');
+                setFt8Message(formatFt8Cq(callsign, qth.grid));
+              }}
+              className="px-1.5 py-1 rounded border border-[#24364d] bg-[#0a1019] hover:border-emerald-400 text-[10px] font-mono-tabular text-emerald-300 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
             >
               CQ
             </button>
             <button
               type="button"
               data-testid="ft8-rpt-button"
-              disabled={!isPoweredOn}
+              disabled={!isPoweredOn || isSendingFt8}
               onClick={() => {
-                if (!isPoweredOn) return;
+                if (!isPoweredOn || isSendingFt8) return;
                 const target = resolvedFt8Target ?? {
                   dxCall: 'DX',
                   report: '-07',
@@ -763,9 +836,9 @@ export const CenterModeSwitcher: React.FC<CenterModeSwitcherProps> = ({
             <button
               type="button"
               data-testid="ft8-rr73-button"
-              disabled={!isPoweredOn}
+              disabled={!isPoweredOn || isSendingFt8}
               onClick={() => {
-                if (!isPoweredOn) return;
+                if (!isPoweredOn || isSendingFt8) return;
                 const dxCall = resolvedFt8Target?.dxCall ?? 'DX';
                 const audioFreqHz = resolvedFt8Target?.audioFreqHz ?? ft8AudioFreq;
                 const rr73Message = formatFt8Reply(dxCall, callsign, 'RR73');
@@ -787,16 +860,31 @@ export const CenterModeSwitcher: React.FC<CenterModeSwitcherProps> = ({
             <input
               type="text"
               data-testid="ft8-message-input"
+              disabled={!isPoweredOn || isSendingFt8}
               value={ft8Message}
-              onChange={(e) => setFt8Message(sanitizeFt8Message(e.target.value))}
-              className="flex-1 min-w-[140px] px-2 py-1 rounded border border-[#24364d] bg-[#060b12] font-mono-tabular text-xs text-sky-200 uppercase focus:outline-none focus:border-sky-400"
+              onChange={(e) => {
+                const draft = sanitizeFt8DraftInput(e.target.value);
+                setFt8Message(draft);
+                const parsed = parseFt8Message(draft);
+                if (parsed.isCq) {
+                  setFt8DxCall('');
+                } else if (
+                  parsed.toCall &&
+                  parsed.toCall.toUpperCase() !== callsign.toUpperCase()
+                ) {
+                  setFt8DxCall(parsed.toCall.toUpperCase());
+                }
+              }}
+              className="flex-1 min-w-[140px] px-2 py-1 rounded border border-[#24364d] bg-[#060b12] font-mono-tabular text-xs text-sky-200 uppercase focus:outline-none focus:border-sky-400 disabled:opacity-50"
             />
 
             <select
               aria-label="FT8 Audio Tone"
+              data-testid="ft8-tone-select"
+              disabled={!isPoweredOn || isSendingFt8}
               value={ft8AudioFreq}
               onChange={(e) => setFt8AudioFreq(Number(e.target.value))}
-              className="px-1.5 py-1 rounded border border-[#24364d] bg-[#0a1019] font-mono-tabular text-[10px] text-slate-300"
+              className="px-1.5 py-1 rounded border border-[#24364d] bg-[#0a1019] font-mono-tabular text-[10px] text-slate-300 cursor-pointer disabled:opacity-40"
             >
               {Array.from(new Set([800, 1000, 1250, 1500, 1850, 2200, ft8AudioFreq]))
                 .sort((a, b) => a - b)
@@ -807,15 +895,33 @@ export const CenterModeSwitcher: React.FC<CenterModeSwitcherProps> = ({
                 ))}
             </select>
 
-            <button
-              type="submit"
-              disabled={!isPoweredOn || isSendingFt8 || !ft8Message.trim()}
-              data-testid="ft8-send-button"
-              className="flex items-center gap-1 px-2.5 py-1 rounded bg-sky-500/20 border border-sky-400/70 hover:bg-sky-500 hover:text-slate-950 text-sky-200 font-display font-bold text-[10.5px] uppercase cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-40"
-            >
-              <Send className="w-3 h-3" />
-              <span>{isSendingFt8 ? 'TX...' : 'TX FT8'}</span>
-            </button>
+            {isSendingFt8 ? (
+              <button
+                key="ft8-stop-btn"
+                type="button"
+                data-testid="ft8-stop-button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onStopDigitalTx();
+                }}
+                className="flex items-center gap-1 px-2.5 py-1 rounded bg-rose-600 hover:bg-rose-500 text-white font-display font-bold text-[10.5px] uppercase cursor-pointer whitespace-nowrap shrink-0"
+              >
+                <Square className="w-3 h-3 fill-current" />
+                <span>Stop</span>
+              </button>
+            ) : (
+              <button
+                key="ft8-send-btn"
+                type="submit"
+                disabled={!isPoweredOn || !sanitizeFt8Message(ft8Message)}
+                data-testid="ft8-send-button"
+                className="flex items-center gap-1 px-2.5 py-1 rounded bg-sky-500/20 border border-sky-400/70 hover:bg-sky-500 hover:text-slate-950 text-sky-200 font-display font-bold text-[10.5px] uppercase cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-40"
+              >
+                <Send className="w-3 h-3" />
+                <span>TX FT8</span>
+              </button>
+            )}
           </form>
         </div>
       )}

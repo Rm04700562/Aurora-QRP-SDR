@@ -44,6 +44,22 @@ export const INITIAL_PTT_MIC_STATE: PttMicState = {
   sessionId: 0,
 };
 
+export const STARTUP_TRANSCEIVER_STATE = {
+  isPoweredOn: true,
+  audioEnabled: true,
+} as const;
+
+export function createStartupPttMicState(): PttMicState {
+  return {
+    ...INITIAL_PTT_MIC_STATE,
+    isPoweredOn: STARTUP_TRANSCEIVER_STATE.isPoweredOn,
+    isTransmitting: false,
+    pttHeld: false,
+    pttLatched: false,
+    micCapturing: false,
+  };
+}
+
 export function canCaptureAudio(state: PttMicState): boolean {
   return (
     state.isPoweredOn &&

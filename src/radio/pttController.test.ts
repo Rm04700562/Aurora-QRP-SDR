@@ -5,6 +5,7 @@ import {
   beginPttHold,
   beginPttLatch,
   canCaptureAudio,
+  createStartupPttMicState,
   endAutomatedTx,
   endPttHold,
   getMicBadgeVisual,
@@ -12,6 +13,7 @@ import {
   PttStopReason,
   resolvePttMicStart,
   setPowerState,
+  STARTUP_TRANSCEIVER_STATE,
   togglePttLatch,
 } from './pttController';
 
@@ -159,4 +161,17 @@ test('mic visual badge accurately reflects RX, TX Mic Live, and digital TX state
     isMicLive: true,
     isTx: true,
   });
+});
+
+test('transceiver powers ON with audio enabled and RX mic off on startup', () => {
+  assert.equal(STARTUP_TRANSCEIVER_STATE.isPoweredOn, true);
+  assert.equal(STARTUP_TRANSCEIVER_STATE.audioEnabled, true);
+
+  const startupPtt = createStartupPttMicState();
+  assert.equal(startupPtt.isPoweredOn, true);
+  assert.equal(startupPtt.isTransmitting, false);
+  assert.equal(startupPtt.pttHeld, false);
+  assert.equal(startupPtt.pttLatched, false);
+  assert.equal(startupPtt.micCapturing, false);
+  assert.equal(canCaptureAudio(startupPtt), false);
 });

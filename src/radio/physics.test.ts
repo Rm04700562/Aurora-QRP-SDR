@@ -25,7 +25,9 @@ import {
   evaluateVoacapPath,
   formatFrequencyMhz,
   getAntennaSpec,
+  getBandPropagationStyle,
   getEffectiveAntennaBandPerformance,
+  getLeftBandButtonClass,
   getMsUntilNextUtcHour,
   getNextTopOfHourUtcLabel,
   getSubsolarPoint,
@@ -125,6 +127,8 @@ test('propagation model drops MUF and increases path loss during geomagnetic sto
 test('evaluateRemoteSignal detects passband tuning and S-meter formatting', () => {
   assert.equal(dbmToSMeterText(-73), 'S9');
   assert.equal(dbmToSMeterText(-53), 'S9+20');
+  assert.equal(PROPAGATION_BEACONS.length, 1);
+  assert.equal(PROPAGATION_BEACONS[0].callsign, 'ARRL NEWS');
   const beacon = PROPAGATION_BEACONS[0];
   const tuned = evaluateRemoteSignal({
     station: beacon,
@@ -605,6 +609,34 @@ test('computeGreyLineTerminator returns valid non-NaN SVG geometry across UTC ho
   // June solstice has positive northern declination (> 20 deg)
   assert.ok(g0.subsolarLat > 20, `Expected northern summer declination, got ${g0.subsolarLat}`);
 });
+
+test('getBandPropagationStyle maps all five propagation ratings to distinct consistent indicator tokens', () => {
+  const exc = getBandPropagationStyle('Excellent');
+  const good = getBandPropagationStyle('Good');
+  const aur = getBandPropagationStyle('Aurora');
+  const fair = getBandPropagationStyle('Fair');
+  const poor = getBandPropagationStyle('Poor');
+
+  assert.equal(exc.short, 'EXC');
+  assert.ok(exc.cell.includes('emerald'));
+  assert.equal(good.short, 'GOOD');
+  assert.ok(good.cell.includes('sky'));
+  assert.equal(aur.short, 'AUR');
+  assert.ok(aur.cell.includes('purple'));
+  assert.equal(fair.short, 'FAIR');
+  assert.ok(fair.cell.includes('amber'));
+  assert.equal(poor.short, 'POOR');
+  assert.ok(poor.cell.includes('rose'));
+});
+
+test('getLeftBandButtonClass keeps left-side band buttons black in both active and inactive states', () => {
+  const inactiveClass = getLeftBandButtonClass(false);
+  const activeClass = getLeftBandButtonClass(true);
+  assert.ok(inactiveClass.split(/\s+/).includes('bg-black'));
+  assert.ok(activeClass.split(/\s+/).includes('bg-black'));
+  assert.notEqual(activeClass, inactiveClass);
+});
+
 
 
 

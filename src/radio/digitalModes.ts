@@ -701,6 +701,10 @@ export function sanitizeFt8Message(text: string): string {
   return text.toUpperCase().replace(/[^A-Z0-9 /+\-]/g, '').replace(/\s+/g, ' ').trim().slice(0, 28);
 }
 
+export function sanitizeFt8DraftInput(text: string): string {
+  return text.toUpperCase().replace(/[^A-Z0-9 /+\-]/g, '').replace(/\s+/g, ' ').trimStart().slice(0, 28);
+}
+
 export function formatFt8Cq(callsign: string, grid: string): string {
   return `CQ ${callsign.toUpperCase()} ${grid.toUpperCase().slice(0, 4)}`;
 }
@@ -762,6 +766,43 @@ export function buildFt8AutoReplyPayload(
     dxCall,
     message: formatFt8Reply(dxCall, myCallsign, grid4),
     audioFreqHz,
+  };
+}
+
+export function buildFt8RowClickDraft(
+  row: { direction?: 'RX' | 'TX'; isCq?: boolean; callsign: string; snrDb?: number; audioFreqHz: number; message?: string },
+  myCallsign: string,
+  myGrid: string,
+  fallbackAudioFreqHz = 1250
+): { dxCall: string; message: string; audioFreqHz: number } {
+  const base = buildFt8AutoReplyPayload(row, myCallsign, myGrid, fallbackAudioFreqHz);
+  if (!row.message || row.isCq) {
+    return base;
+  }
+  const parsed = parseFt8Message(row.message);
+  const dxCall = (parsed.fromCall || base.dxCall).trim().toUpperCase();
+  const extra = parsed.extra.trim().toUpperCase();
+  const rpt = formatFt8SnrReport(typeof row.snrDb === 'number' ? row.snrDb : -7);
+
+  let nextPayload: string;
+  if (/^(RR73|RRR)$/.test(extra)) {
+    nextPayload = '73';
+  } else if (extra === '73') {
+    nextPayload = '73';
+  } else if (/^R[+-]\d{2}$/.test(extra)) {
+    nextPayload = 'RR73';
+  } else if (/^[+-]\d{2}$/.test(extra)) {
+    nextPayload = `R${rpt}`;
+  } else if (/^[A-R]{2}[0-9]{2}$/.test(extra)) {
+    nextPayload = rpt;
+  } else {
+    nextPayload = myGrid.trim().toUpperCase().slice(0, 4) || 'IO91';
+  }
+
+  return {
+    dxCall,
+    message: formatFt8Reply(dxCall, myCallsign, nextPayload),
+    audioFreqHz: base.audioFreqHz,
   };
 }
 
@@ -1327,4 +1368,367 @@ export function getTxToneProfile(
     return { hasTone: true, modeLabel: 'FT8', baseFreqHz: ft8BaseFreqHz, secondaryFreqHz: ft8BaseFreqHz + 43.75 };
   }
   return { hasTone: false, modeLabel: 'NONE', baseFreqHz: 0 };
+}
+
+// ---------------------------------------------------------------------------
+// 5. JTTY Japanese JIS 6-Unit / Latin Dual-Shift FSK Teleprinter Codec & DSP
+// ---------------------------------------------------------------------------
+
+export const DEFAULT_JTTY_CONFIG = {
+  baudRate: 50 as 45.45 | 50 | 75,
+  shiftHz: 170 as 170 | 425 | 850,
+  markHz: 2125 as 1275 | 2125,
+  kanaShift: false,
+  fineOffsetHz: 0,
+  reversePolarity: false,
+};
+
+export type JttyCodecConfig = typeof DEFAULT_JTTY_CONFIG;
+
+const JTTY_ALNUM_SHIFT = 62;
+const JTTY_KANA_SHIFT = 63;
+
+const JTTY_ALNUM_CHARS =
+  ' ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,/+-?!:=()\'\n\r@#&';
+const JTTY_KANA_CHARS =
+  ' アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲンャュョッー・゛゜\n\r.,/+-?!';
+
+const JTTY_DAKUTEN_DECOMP: Record<string, [string, string]> = {
+  ガ: ['カ', '゛'], ギ: ['キ', '゛'], グ: ['ク', '゛'], ゲ: ['ケ', '゛'], ゴ: ['コ', '゛'],
+  ザ: ['サ', '゛'], ジ: ['シ', '゛'], ズ: ['ス', '゛'], ゼ: ['セ', '゛'], ゾ: ['ソ', '゛'],
+  ダ: ['タ', '゛'], ヂ: ['チ', '゛'], ヅ: ['ツ', '゛'], デ: ['テ', '゛'], ド: ['ト', '゛'],
+  バ: ['ハ', '゛'], ビ: ['ヒ', '゛'], ブ: ['フ', '゛'], ベ: ['ヘ', '゛'], ボ: ['ホ', '゛'],
+  パ: ['ハ', '゜'], ピ: ['ヒ', '゜'], プ: ['フ', '゜'], ペ: ['ヘ', '゜'], ポ: ['ホ', '゜'],
+  ヴ: ['ウ', '゛'],
+};
+
+const JTTY_DAKUTEN_RECOMP: Record<string, string> = {};
+for (const [composed, [base, mark]] of Object.entries(JTTY_DAKUTEN_DECOMP)) {
+  JTTY_DAKUTEN_RECOMP[`${base}${mark}`] = composed;
+}
+
+const JTTY_ALNUM_TO_CODE: Record<string, number> = {};
+const JTTY_CODE_TO_ALNUM: Record<number, string> = {};
+for (let i = 0; i < JTTY_ALNUM_CHARS.length && i < 62; i++) {
+  const ch = JTTY_ALNUM_CHARS[i];
+  JTTY_ALNUM_TO_CODE[ch] = i;
+  JTTY_CODE_TO_ALNUM[i] = ch;
+}
+
+const JTTY_KANA_TO_CODE: Record<string, number> = {};
+const JTTY_CODE_TO_KANA: Record<number, string> = {};
+for (let i = 0; i < JTTY_KANA_CHARS.length && i < 62; i++) {
+  const ch = JTTY_KANA_CHARS[i];
+  JTTY_KANA_TO_CODE[ch] = i;
+  JTTY_CODE_TO_KANA[i] = ch;
+}
+
+const ROMAJI_TABLE: Array<[string, string]> = [
+  ['KYA', 'キャ'], ['KYU', 'キュ'], ['KYO', 'キョ'],
+  ['SHA', 'シャ'], ['SHU', 'シュ'], ['SHO', 'ショ'],
+  ['CHA', 'チャ'], ['CHU', 'チュ'], ['CHO', 'チョ'],
+  ['NYA', 'ニャ'], ['NYU', 'ニュ'], ['NYO', 'ニョ'],
+  ['HYA', 'ヒャ'], ['HYU', 'ヒュ'], ['HYO', 'ヒョ'],
+  ['MYA', 'ミャ'], ['MYU', 'ミュ'], ['MYO', 'ミョ'],
+  ['RYA', 'リャ'], ['RYU', 'リュ'], ['RYO', 'リョ'],
+  ['GYA', 'ギャ'], ['GYU', 'ギュ'], ['GYO', 'ギョ'],
+  ['JA', 'ジャ'], ['JU', 'ジュ'], ['JO', 'ジョ'],
+  ['BYA', 'ビャ'], ['BYU', 'ビュ'], ['BYO', 'ビョ'],
+  ['PYA', 'ピャ'], ['PYU', 'ピュ'], ['PYO', 'ピョ'],
+  ['SHI', 'シ'], ['CHI', 'チ'], ['TSU', 'ツ'],
+  ['KA', 'カ'], ['KI', 'キ'], ['KU', 'ク'], ['KE', 'ケ'], ['KO', 'コ'],
+  ['SA', 'サ'], ['SI', 'シ'], ['SU', 'ス'], ['SE', 'セ'], ['SO', 'ソ'],
+  ['TA', 'タ'], ['TI', 'チ'], ['TU', 'ツ'], ['TE', 'テ'], ['TO', 'ト'],
+  ['NA', 'ナ'], ['NI', 'ニ'], ['NU', 'ヌ'], ['NE', 'ネ'], ['NO', 'ノ'],
+  ['HA', 'ハ'], ['HI', 'ヒ'], ['FU', 'フ'], ['HU', 'フ'], ['HE', 'ヘ'], ['HO', 'ホ'],
+  ['MA', 'マ'], ['MI', 'ミ'], ['MU', 'ム'], ['ME', 'メ'], ['MO', 'モ'],
+  ['YA', 'ヤ'], ['YU', 'ユ'], ['YO', 'ヨ'],
+  ['RA', 'ラ'], ['RI', 'リ'], ['RU', 'ル'], ['RE', 'レ'], ['RO', 'ロ'],
+  ['WA', 'ワ'], ['WO', 'ヲ'],
+  ['GA', 'ガ'], ['GI', 'ギ'], ['GU', 'グ'], ['GE', 'ゲ'], ['GO', 'ゴ'],
+  ['ZA', 'ザ'], ['JI', 'ジ'], ['ZI', 'ジ'], ['ZU', 'ズ'], ['ZE', 'ゼ'], ['ZO', 'ゾ'],
+  ['DA', 'ダ'], ['DI', 'ヂ'], ['DU', 'ヅ'], ['DE', 'デ'], ['DO', 'ド'],
+  ['BA', 'バ'], ['BI', 'ビ'], ['BU', 'ブ'], ['BE', 'ベ'], ['BO', 'ボ'],
+  ['PA', 'パ'], ['PI', 'ピ'], ['PU', 'プ'], ['PE', 'ペ'], ['PO', 'ポ'],
+  ['A', 'ア'], ['I', 'イ'], ['U', 'ウ'], ['E', 'エ'], ['O', 'オ'],
+  ['N', 'ン'], ['-', 'ー'],
+];
+
+function isSupportedJttyKanaChar(ch: string): boolean {
+  return JTTY_KANA_TO_CODE[ch] !== undefined || JTTY_DAKUTEN_DECOMP[ch] !== undefined;
+}
+
+export function romajiToKatakana(input: string): string {
+  const upper = input.toUpperCase();
+  let out = '';
+  let i = 0;
+  while (i < upper.length) {
+    let matched = false;
+    for (const [rom, kana] of ROMAJI_TABLE) {
+      if (rom.length > 1 && upper.startsWith(rom, i) && kana.split('').every(isSupportedJttyKanaChar)) {
+        out += kana;
+        i += rom.length;
+        matched = true;
+        break;
+      }
+    }
+    if (matched) continue;
+    const one = ROMAJI_TABLE.find(
+      ([rom, kana]) => rom.length === 1 && upper.startsWith(rom, i) && kana.split('').every(isSupportedJttyKanaChar)
+    );
+    if (one) {
+      // Allow explicit NN -> ン at end/before consonants, while preserving N + N[vowel] (e.g. KONNICHIWA -> コンニチワ)
+      const nextAfterNn = upper[i + 2];
+      if (upper.startsWith('NN', i) && (!nextAfterNn || !'AIUEOY'.includes(nextAfterNn))) {
+        out += 'ン';
+        i += 2;
+      } else {
+        out += one[1];
+        i += 1;
+      }
+    } else {
+      out += upper[i];
+      i += 1;
+    }
+  }
+  return out;
+}
+
+export function sanitizeJttyText(text: string, maxLen = 160): string {
+  // Convert Hiragana (U+3041..U+3096) to Katakana (U+30A1..U+30F6) automatically
+  let normalized = '';
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code >= 0x3041 && code <= 0x3096) {
+      normalized += String.fromCharCode(code + 0x60);
+    } else {
+      normalized += text[i];
+    }
+  }
+  const upper = normalized.toUpperCase();
+  let out = '';
+  for (let i = 0; i < upper.length && out.length < maxLen; i++) {
+    const ch = upper[i];
+    if (JTTY_ALNUM_TO_CODE[ch] !== undefined || isSupportedJttyKanaChar(ch)) {
+      out += ch;
+    }
+  }
+  return out;
+}
+
+export function getStandardJttyFrequency(bandId: BandId): number {
+  const map: Record<BandId, number> = {
+    '10m': 28_088_000,
+    '12m': 24_924_000,
+    '15m': 21_088_000,
+    '17m': 18_106_000,
+    '20m': 14_088_000,
+    '30m': 10_144_000,
+    '40m': 7_048_000,
+    '60m': 5_368_000,
+    '80m': 3_588_000,
+    '160m': 1_842_000,
+  };
+  return map[bandId] ?? getBandSpec(bandId).defaultHz;
+}
+
+export function getJttyMarkSpaceFreqs(config: Partial<JttyCodecConfig> = {}) {
+  return getRttyMarkSpaceFreqs({
+    baudRate: config.baudRate ?? DEFAULT_JTTY_CONFIG.baudRate,
+    shiftHz: config.shiftHz ?? DEFAULT_JTTY_CONFIG.shiftHz,
+    markHz: config.markHz ?? DEFAULT_JTTY_CONFIG.markHz,
+    fineOffsetHz: config.fineOffsetHz ?? DEFAULT_JTTY_CONFIG.fineOffsetHz,
+    reversePolarity: config.reversePolarity ?? DEFAULT_JTTY_CONFIG.reversePolarity,
+    uos: false,
+  });
+}
+
+export function encodeJttyChars(text: string): number[] {
+  const clean = sanitizeJttyText(text);
+  const words: number[] = [JTTY_ALNUM_SHIFT];
+  let shift: 'ALNUM' | 'KANA' = 'ALNUM';
+
+  const pushKanaChar = (kana: string) => {
+    const code = JTTY_KANA_TO_CODE[kana];
+    if (code === undefined) return;
+    if (shift !== 'KANA') {
+      words.push(JTTY_KANA_SHIFT);
+      shift = 'KANA';
+    }
+    words.push(code);
+  };
+
+  for (let i = 0; i < clean.length; i++) {
+    const ch = clean[i];
+    if (ch === ' ') {
+      words.push(0);
+      continue;
+    }
+    const decomp = JTTY_DAKUTEN_DECOMP[ch];
+    if (decomp) {
+      pushKanaChar(decomp[0]);
+      pushKanaChar(decomp[1]);
+    } else if (JTTY_KANA_TO_CODE[ch] !== undefined) {
+      pushKanaChar(ch);
+    } else if (JTTY_ALNUM_TO_CODE[ch] !== undefined) {
+      if (shift !== 'ALNUM') {
+        words.push(JTTY_ALNUM_SHIFT);
+        shift = 'ALNUM';
+      }
+      words.push(JTTY_ALNUM_TO_CODE[ch]);
+    }
+  }
+  return words;
+}
+
+export function decodeJttyChars(words: number[]): string {
+  let shift: 'ALNUM' | 'KANA' = 'ALNUM';
+  let out = '';
+  for (const w of words) {
+    const code = w & 0b111111;
+    if (code === JTTY_ALNUM_SHIFT) {
+      shift = 'ALNUM';
+      continue;
+    }
+    if (code === JTTY_KANA_SHIFT) {
+      shift = 'KANA';
+      continue;
+    }
+    if (code === 0) {
+      out += ' ';
+      continue;
+    }
+    const ch = shift === 'ALNUM' ? JTTY_CODE_TO_ALNUM[code] : JTTY_CODE_TO_KANA[code];
+    if (!ch) continue;
+    if ((ch === '゛' || ch === '゜') && out.length > 0) {
+      const combined = JTTY_DAKUTEN_RECOMP[`${out[out.length - 1]}${ch}`];
+      if (combined) {
+        out = out.slice(0, -1) + combined;
+        continue;
+      }
+    }
+    out += ch;
+  }
+  return out;
+}
+
+/**
+ * Generates exact 6-unit JIS/Latin JTTY FSK timeline (start bit + 6 LSB-first data bits + 1.5 stop bits).
+ */
+export function jttyMarkSpaceTimeline(
+  text: string,
+  config: Partial<JttyCodecConfig> = {}
+): RttyToneSegment[] {
+  const { markHz, spaceHz, bitMs } = getJttyMarkSpaceFreqs(config);
+  const words = encodeJttyChars(text);
+  const segments: RttyToneSegment[] = [{ freqHz: markHz, durationMs: 110, isMark: true }];
+
+  for (const word of words) {
+    segments.push({ freqHz: spaceHz, durationMs: bitMs, isMark: false });
+    for (let b = 0; b < 6; b++) {
+      const bit = (word >> b) & 1;
+      segments.push({
+        freqHz: bit === 1 ? markHz : spaceHz,
+        durationMs: bitMs,
+        isMark: bit === 1,
+      });
+    }
+    segments.push({ freqHz: markHz, durationMs: bitMs * 1.5, isMark: true });
+  }
+  segments.push({ freqHz: markHz, durationMs: 65, isMark: true });
+  return segments;
+}
+
+export function jttyDurationMs(text: string, config: Partial<JttyCodecConfig> = {}): number {
+  const segs = jttyMarkSpaceTimeline(text, config);
+  let total = 0;
+  for (const s of segs) total += s.durationMs;
+  return Math.round(total);
+}
+
+export function synthesizeJttyAudioPcm(
+  text: string,
+  sampleRate = 16000,
+  config: Partial<JttyCodecConfig> = {}
+): Float32Array {
+  const segs = jttyMarkSpaceTimeline(text, config);
+  const totalSamples = segs.reduce((acc, s) => acc + Math.max(1, Math.round((s.durationMs / 1000) * sampleRate)), 0);
+  const out = new Float32Array(totalSamples);
+
+  let phase = 0;
+  let offset = 0;
+  for (const seg of segs) {
+    const count = Math.max(1, Math.round((seg.durationMs / 1000) * sampleRate));
+    const phaseInc = (2 * Math.PI * seg.freqHz) / sampleRate;
+    for (let i = 0; i < count && offset < out.length; i++) {
+      out[offset++] = Math.sin(phase) * 0.72;
+      phase += phaseInc;
+      if (phase > Math.PI * 2) phase -= Math.PI * 2;
+    }
+  }
+  return out;
+}
+
+export function demodulateJttyPcm(
+  samples: Float32Array,
+  sampleRate = 16000,
+  config: Partial<JttyCodecConfig> = {}
+): { text: string; words: number[]; markSnrRatio: number } {
+  const { markHz, spaceHz, baudRate } = getJttyMarkSpaceFreqs(config);
+  const bitSamples = sampleRate / baudRate;
+  const winLen = Math.max(48, Math.round(bitSamples * 0.45));
+
+  const decisionAt = (centerIdx: number): { isMark: boolean; markPwr: number; spacePwr: number } => {
+    const start = Math.max(0, Math.round(centerIdx - winLen / 2));
+    const markPwr = goertzelPower(samples, start, winLen, markHz, sampleRate);
+    const spacePwr = goertzelPower(samples, start, winLen, spaceHz, sampleRate);
+    return { isMark: markPwr >= spacePwr, markPwr, spacePwr };
+  };
+
+  const words: number[] = [];
+  const scanStep = Math.max(6, Math.round(bitSamples / 18));
+  let idx = Math.round(winLen / 2);
+  let prevMark = true;
+  let totalRatio = 0;
+  let ratioCount = 0;
+
+  while (idx + Math.round(bitSamples * 8.2) < samples.length) {
+    const d = decisionAt(idx);
+    if (prevMark && !d.isMark) {
+      let edge = idx;
+      while (edge > winLen / 2 && !decisionAt(edge - 4).isMark) {
+        edge -= 4;
+      }
+      const startCenter = edge + bitSamples * 0.5;
+      const startDec = decisionAt(startCenter);
+      if (!startDec.isMark) {
+        let word = 0;
+        for (let b = 0; b < 6; b++) {
+          const bitCenter = edge + bitSamples * (1.5 + b);
+          const bitDec = decisionAt(bitCenter);
+          if (bitDec.isMark) word |= 1 << b;
+          const hi = Math.max(bitDec.markPwr, bitDec.spacePwr);
+          const lo = Math.max(1e-6, Math.min(bitDec.markPwr, bitDec.spacePwr));
+          totalRatio += hi / lo;
+          ratioCount += 1;
+        }
+        const stopCenter = edge + bitSamples * 7.75;
+        const stopDec = decisionAt(stopCenter);
+        if (stopDec.isMark) {
+          words.push(word);
+          idx = Math.round(edge + bitSamples * 7.8);
+          prevMark = true;
+          continue;
+        }
+      }
+    }
+    prevMark = d.isMark;
+    idx += scanStep;
+  }
+
+  return {
+    text: decodeJttyChars(words),
+    words,
+    markSnrRatio: ratioCount > 0 ? Number((totalRatio / ratioCount).toFixed(1)) : 1,
+  };
 }
