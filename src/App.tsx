@@ -200,6 +200,8 @@ export default function App() {
 
   // VFO & Radio State
   const [activeVfo, setActiveVfo] = useState<'A' | 'B'>('A');
+  const activeVfoRef = useRef(activeVfo);
+  activeVfoRef.current = activeVfo;
   const [vfoAFreqHz, setVfoAFreqHz] = useState(14_250_000);
   const [vfoBFreqHz, setVfoBFreqHz] = useState(7_090_000);
   const [activeBand, setActiveBand] = useState<BandId>('20m');
@@ -806,7 +808,25 @@ export default function App() {
           if (typeof msg.clientId === 'string') setClientId(msg.clientId);
           if (msg.propagation) setPropagation(msg.propagation as PropagationConditions);
         } else if (msg.type === 'station:list' && Array.isArray(msg.stations)) {
-          setRemotePeers(msg.stations as RemoteStation[]);
+          const nextStations = msg.stations as RemoteStation[];
+          setRemotePeers(nextStations);
+          const activeStationIds = new Set(nextStations.map((st) => st.id));
+          const stoppedStationIds = new Set(
+            nextStations.filter((st) => !st.isTransmitting).map((st) => st.id)
+          );
+          if (signalBurstsRef.current.length > 0) {
+            signalBurstsRef.current = signalBurstsRef.current.filter((b) => {
+              if (b.id.startsWith('voip-')) {
+                const peerId = b.id.slice(5);
+                return activeStationIds.has(peerId) && !stoppedStationIds.has(peerId);
+              }
+              if (b.id.startsWith('rf-')) {
+                const peerId = b.id.slice(3);
+                return activeStationIds.has(peerId) && !stoppedStationIds.has(peerId);
+              }
+              return true;
+            });
+          }
           if (Array.isArray(msg.globalStations)) {
             setAllGlobalStations(msg.globalStations as RemoteStation[]);
           }
@@ -822,8 +842,18 @@ export default function App() {
           if (typeof msg.newGroupId === 'string' && msg.newGroupId) {
             setGroupId(msg.newGroupId);
           }
-          if (typeof msg.newFrequencyHz === 'number') {
-            setVfoAFreqHz(msg.newFrequencyHz);
+          const hasBand = typeof msg.newBand === 'string' && msg.newBand.length > 0;
+          const hasFreq = typeof msg.newFrequencyHz === 'number' && Number.isFinite(msg.newFrequencyHz);
+          if (hasBand || hasFreq) {
+            const targetBand: BandId = hasBand
+              ? (msg.newBand as BandId)
+              : findBandForFrequency(msg.newFrequencyHz as number).id;
+            setActiveBand(targetBand);
+            const targetHz = hasFreq
+              ? clampFrequencyToBand(msg.newFrequencyHz as number, targetBand)
+              : getBandSpec(targetBand).defaultHz;
+            if (activeVfoRef.current === 'A') setVfoAFreqHz(targetHz);
+            else setVfoBFreqHz(targetHz);
           }
           setAdminNotice({
             id: `adm-${Date.now()}`,

@@ -668,3 +668,53 @@ export function pushWaterfallSliceRow(
     buffer[off + 3] = 255;
   }
 }
+
+/**
+ * Resets an entire RGBA waterfall buffer to a clean background slate (used after transmissions end).
+ */
+export function clearWaterfallBuffer(
+  buffer: Uint8ClampedArray,
+  width: number,
+  height: number,
+  bgColor: [number, number, number] = [6, 12, 24]
+): void {
+  if (width <= 0 || height <= 0) return;
+  const totalBytes = Math.min(buffer.length, width * height * 4);
+  for (let i = 0; i < totalBytes; i += 4) {
+    buffer[i] = bgColor[0];
+    buffer[i + 1] = bgColor[1];
+    buffer[i + 2] = bgColor[2];
+    buffer[i + 3] = 255;
+  }
+}
+
+export interface TransmissionActivitySnapshot {
+  localTx: boolean;
+  remoteTx: boolean;
+}
+
+/**
+ * Detects when either a local transmission or an active remote band transmission has just ended.
+ */
+export function detectTransmissionEnded(
+  prev: TransmissionActivitySnapshot,
+  curr: TransmissionActivitySnapshot
+): boolean {
+  if (prev.localTx && !curr.localTx) return true;
+  if (prev.remoteTx && !curr.remoteTx && !curr.localTx) return true;
+  return false;
+}
+
+/**
+ * Returns true when Web Audio baseband FFT represents real TX modulation or active incoming
+ * RX signal audio, preventing idle atmospheric RX noise hiss from drawing false passband blocks.
+ */
+export function shouldSampleBasebandSpectrum(
+  isTx: boolean,
+  nowMs: number,
+  rxSignalActiveUntilMs: number
+): boolean {
+  if (isTx) return true;
+  return nowMs <= rxSignalActiveUntilMs;
+}
+

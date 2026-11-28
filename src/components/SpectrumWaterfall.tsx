@@ -4,6 +4,7 @@ import { SdrAudioEngine } from '../audio/sdrAudioEngine';
 import { BANDS } from '../radio/physics';
 import {
   buildWaterfallColorLut,
+  clearWaterfallBuffer,
   collectVisibleSignalMarkers,
   computeNotchRfOffsetHz,
   computePassbandOffsetsHz,
@@ -235,12 +236,7 @@ export const SpectrumWaterfall: React.FC<SpectrumWaterfallProps> = ({
 
       if (!wfBufRef.current || wfBufRef.current.length !== W * WH * 4) {
         wfBufRef.current = new Uint8ClampedArray(W * WH * 4);
-        for (let i = 0; i < wfBufRef.current.length; i += 4) {
-          wfBufRef.current[i] = 6;
-          wfBufRef.current[i + 1] = 12;
-          wfBufRef.current[i + 2] = 24;
-          wfBufRef.current[i + 3] = 255;
-        }
+        clearWaterfallBuffer(wfBufRef.current, W, WH);
         wfImgRef.current = null;
       }
 
@@ -249,6 +245,7 @@ export const SpectrumWaterfall: React.FC<SpectrumWaterfallProps> = ({
       if (!sCtx || !wCtx) return;
 
       if (!s.isPoweredOn) {
+        clearWaterfallBuffer(wfBufRef.current, W, WH);
         if (s.isActive) {
           sCtx.fillStyle = '#03060c';
           sCtx.fillRect(0, 0, W, H);
@@ -263,25 +260,24 @@ export const SpectrumWaterfall: React.FC<SpectrumWaterfallProps> = ({
         return;
       }
 
-      // Track band/span/zoom/frequency changes so existing waterfall trails shift cleanly with VFO tuning
+      const nowEpochMs = Date.now();
+      const baseFloor = s.noiseFloorDbm + (s.rfGainPct - 50) * 0.16;
+
+      // Track band/span/zoom/frequency changes so waterfall shifts or resets cleanly
       const prev = prevViewRef.current;
       const effectiveSpanHz = getEffectiveSpanHz(s.spanKhz, s.zoom);
       const plotWidth = getWaterfallPlotWidth(W);
       if (prev.band !== s.band || prev.spanKhz !== s.spanKhz || prev.zoom !== s.zoom) {
-        for (let i = 0; i < wfBufRef.current.length; i += 4) {
-          wfBufRef.current[i] = 6;
-          wfBufRef.current[i + 1] = 12;
-          wfBufRef.current[i + 2] = 24;
-          wfBufRef.current[i + 3] = 255;
-        }
-        smoothedRef.current.fill(s.noiseFloorDbm);
-        peakHoldRef.current.fill(s.noiseFloorDbm);
+        clearWaterfallBuffer(wfBufRef.current, W, WH);
+        smoothedRef.current.fill(baseFloor);
+        peakHoldRef.current.fill(baseFloor);
+        wfImgRef.current = null;
       } else if (prev.frequencyHz !== s.frequencyHz) {
         const deltaFreqHz = prev.frequencyHz - s.frequencyHz;
         const shiftPx = Math.round((deltaFreqHz / effectiveSpanHz) * plotWidth);
         if (shiftPx !== 0) {
           shiftWaterfallBufferHorizontal(wfBufRef.current, W, WH, shiftPx);
-          peakHoldRef.current.fill(s.noiseFloorDbm);
+          peakHoldRef.current.fill(baseFloor);
         }
       }
       prevViewRef.current = {
@@ -292,7 +288,6 @@ export const SpectrumWaterfall: React.FC<SpectrumWaterfallProps> = ({
       };
 
       const minFreq = s.frequencyHz - effectiveSpanHz / 2;
-      const nowEpochMs = Date.now();
       const toneTel = s.audioEngine?.getToneTelemetry();
       const basebandFft = s.audioEngine?.getBasebandSpectrum(96, 3600) ?? null;
 
@@ -331,7 +326,6 @@ export const SpectrumWaterfall: React.FC<SpectrumWaterfallProps> = ({
         peakHold[i] = Math.max(smoothed[i], prevP - 0.32);
       }
 
-      const baseFloor = s.noiseFloorDbm + (s.rfGainPct - 50) * 0.16;
       pushWaterfallSliceRow(wfBufRef.current, W, WH, rawSlice, baseFloor, lutRef.current);
 
       // Skip painting visible canvas frames if currently hidden on another tab (buffer kept ticking cleanly!)
@@ -506,7 +500,7 @@ export const SpectrumWaterfall: React.FC<SpectrumWaterfallProps> = ({
       }
 
       // 2. Draw Waterfall Canvas directly from persistent RGBA buffer (no getImageData readback stall)
-      if (!wfImgRef.current) {
+      if (!wfImgRef.current || wfImgRef.current.width !== W || wfImgRef.current.height !== WH) {
         wfImgRef.current = new ImageData(W, WH);
       }
       wfImgRef.current.data.set(wfBufRef.current);

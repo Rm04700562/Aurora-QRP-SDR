@@ -86,7 +86,7 @@ export const StationSettingsModal: React.FC<StationSettingsModalProps> = ({
 
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
-    const cleanedCall = draftCall.trim().toUpperCase().replace(/[^A-Z0-9/]/g, '').slice(0, 12) || 'ZS1ROM';
+    const cleanedCall = draftCall.trim().toUpperCase().replace(/[^A-Z0-9/]/g, '').slice(0, 12) || callsign;
     const lat = Math.max(-89, Math.min(89, Number(draftLat) || 0));
     const lon = Math.max(-180, Math.min(180, Number(draftLon) || 0));
     const grid = draftGrid.trim().toUpperCase() || maidenheadFromLatLon(lat, lon);

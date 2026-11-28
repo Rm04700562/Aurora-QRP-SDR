@@ -2,14 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildWaterfallColorLut,
+  clearWaterfallBuffer,
   collectVisibleSignalMarkers,
   computeNotchRfOffsetHz,
   computePassbandOffsetsHz,
   computeWaterfallNormalizedIntensity,
+  detectTransmissionEnded,
   frequencyHzToPixelX,
   pixelXToFrequencyHz,
   pushWaterfallSliceRow,
   shiftWaterfallBufferHorizontal,
+  shouldSampleBasebandSpectrum,
   synthesizeSpectrumSlice,
   WATERFALL_PLOT_LEFT,
   WATERFALL_PLOT_RIGHT,
@@ -344,5 +347,108 @@ test('waterfall excludes beacons and only renders real incoming stations and bur
   assert.equal(markers[0].kind, 'live');
   assert.equal(markers[0].freqHz, 14_236_000);
   assert.equal('callsign' in markers[0], false);
+});
+
+test('clearWaterfallBuffer resets all RGBA pixels to dark slate after transmission ends', () => {
+  const W = 120;
+  const H = 6;
+  const buf = new Uint8ClampedArray(W * H * 4);
+  const lut = buildWaterfallColorLut('aurora');
+
+  const txSlice = new Float32Array(64).fill(-24);
+  pushWaterfallSliceRow(buf, W, H, txSlice, -120, lut);
+  pushWaterfallSliceRow(buf, W, H, txSlice, -120, lut);
+
+  const centerOff = (WATERFALL_PLOT_LEFT + 32) * 4;
+  assert.ok(buf[centerOff] > 200, 'Expected bright TX pixels before clearing');
+
+  clearWaterfallBuffer(buf, W, H);
+  for (let i = 0; i < buf.length; i += 4) {
+    assert.equal(buf[i], 6);
+    assert.equal(buf[i + 1], 12);
+    assert.equal(buf[i + 2], 24);
+    assert.equal(buf[i + 3], 255);
+  }
+});
+
+test('detectTransmissionEnded triggers when local or remote transmission finishes', () => {
+  assert.equal(detectTransmissionEnded({ localTx: false, remoteTx: false }, { localTx: true, remoteTx: false }), false);
+  assert.equal(detectTransmissionEnded({ localTx: true, remoteTx: false }, { localTx: true, remoteTx: false }), false);
+  assert.equal(detectTransmissionEnded({ localTx: true, remoteTx: false }, { localTx: false, remoteTx: false }), true);
+  assert.equal(detectTransmissionEnded({ localTx: true, remoteTx: true }, { localTx: false, remoteTx: true }), true);
+  assert.equal(detectTransmissionEnded({ localTx: false, remoteTx: true }, { localTx: false, remoteTx: false }), true);
+  assert.equal(detectTransmissionEnded({ localTx: false, remoteTx: false }, { localTx: false, remoteTx: false }), false);
+});
+
+test('shouldSampleBasebandSpectrum gates idle RX hiss after TX ends while allowing active TX or RX audio', () => {
+  assert.equal(shouldSampleBasebandSpectrum(true, 1000, 0), true);
+  assert.equal(shouldSampleBasebandSpectrum(false, 1000, 0), false);
+  assert.equal(shouldSampleBasebandSpectrum(false, 1000, 1500), true);
+  assert.equal(shouldSampleBasebandSpectrum(false, 1600, 1500), false);
+});
+
+test('after transmission ends, TX trace scrolls down row by row until exiting bottom of waterfall', () => {
+  const W = 120;
+  const H = 6;
+  const buf = new Uint8ClampedArray(W * H * 4);
+  clearWaterfallBuffer(buf, W, H);
+  const lut = buildWaterfallColorLut('aurora');
+  const centerX = WATERFALL_PLOT_LEFT + Math.floor((W - WATERFALL_PLOT_LEFT - WATERFALL_PLOT_RIGHT) / 2);
+
+  // Transmit 1 bright slice on row 0
+  const txSlice = synthesizeSpectrumSlice({
+    bins: 64,
+    centerFreqHz: 14_250_000,
+    spanKhz: 50,
+    zoom: 1,
+    mode: 'CW',
+    band: '20m',
+    filterWidthKhz: 0.5,
+    rfGainPct: 50,
+    noiseFloorDbm: -120,
+    noiseReductionPct: 50,
+    noiseBlankerPct: 0,
+    notchPct: 0,
+    isTransmitting: true,
+    micRms: 0,
+    nowMs: 1000,
+    stations: [],
+    randomFn: () => 0.5,
+  });
+  pushWaterfallSliceRow(buf, W, H, txSlice, -120, lut);
+  assert.ok(buf[centerX * 4] > 200, 'Expected bright TX trace at row 0');
+
+  // Transmission ends: push quiet RX noise rows; TX trace must step down 1 row at a time until row H-1 then exit
+  const rxSlice = synthesizeSpectrumSlice({
+    bins: 64,
+    centerFreqHz: 14_250_000,
+    spanKhz: 50,
+    zoom: 1,
+    mode: 'CW',
+    band: '20m',
+    filterWidthKhz: 0.5,
+    rfGainPct: 50,
+    noiseFloorDbm: -120,
+    noiseReductionPct: 50,
+    noiseBlankerPct: 0,
+    notchPct: 0,
+    isTransmitting: false,
+    micRms: 0,
+    nowMs: 1100,
+    stations: [],
+    randomFn: () => 0.5,
+  });
+
+  for (let row = 1; row < H; row++) {
+    pushWaterfallSliceRow(buf, W, H, rxSlice, -120, lut);
+    assert.ok(buf[centerX * 4] < 40, `Expected quiet RX floor at row 0 on step ${row}`);
+    const movedOff = (row * W + centerX) * 4;
+    assert.ok(buf[movedOff] > 200, `Expected TX trace to advance to row ${row}`);
+  }
+
+  // One more RX row pushes the TX trace off the bottom edge of the waterfall
+  pushWaterfallSliceRow(buf, W, H, rxSlice, -120, lut);
+  const bottomOff = ((H - 1) * W + centerX) * 4;
+  assert.ok(buf[bottomOff] < 40, 'Expected TX trace to exit cleanly after reaching bottom of waterfall');
 });
 

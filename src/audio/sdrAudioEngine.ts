@@ -1,4 +1,5 @@
 import { morseTimeline } from '../radio/physics';
+import { shouldSampleBasebandSpectrum } from '../radio/waterfall';
 import {
   encodeFt8Tones,
   generateSstvTestPattern,
@@ -104,6 +105,7 @@ export class SdrAudioEngine {
     endMs: number;
     segs: Array<{ endOffsetMs: number; on: boolean }>;
   } | null = null;
+  private rxSignalActiveUntilMs = 0;
 
   private onMicLevel?: (db: number, alcPct: number) => void;
   private onPcmFrame?: (pcm16Base64: string, sampleRate: number, rms: number) => void;
@@ -296,7 +298,9 @@ export class SdrAudioEngine {
   }
 
   public setTransmitting(tx: boolean) {
-    if (!tx && (this.micActive || this.micStream)) {
+    if (tx) {
+      this.rxSignalActiveUntilMs = 0;
+    } else if (this.micActive || this.micStream) {
       this.stopMicrophone();
     }
     this.updateParams({ ...this.currentParams, isTransmitting: tx });
@@ -305,6 +309,9 @@ export class SdrAudioEngine {
   public updateParams(next: SdrAudioParams) {
     if ((!next.isTransmitting || next.isPoweredOn === false) && (this.micActive || this.micStream)) {
       this.stopMicrophone();
+    }
+    if (next.isPoweredOn === false || !next.audioEnabled) {
+      this.rxSignalActiveUntilMs = 0;
     }
     this.currentParams = next;
     if (!this.ctx || !this.masterGain || !this.bandpassFilter || !this.notchFilter || !this.noiseGain) {
@@ -593,6 +600,10 @@ export class SdrAudioEngine {
     }
     src.start(this.nextPlaybackTime);
     this.nextPlaybackTime += buffer.duration;
+    this.rxSignalActiveUntilMs = Math.max(
+      this.rxSignalActiveUntilMs,
+      Date.now() + Math.round(buffer.duration * 1000) + 120
+    );
   }
 
   public getToneTelemetry() {
@@ -658,7 +669,13 @@ export class SdrAudioEngine {
     const isTx = this.currentParams.isTransmitting;
     const analyser = isTx ? this.txAnalyser : this.rxAnalyser;
 
-    if (!ctx || ctx.state !== 'running' || !analyser || !this.fftScratch) {
+    if (
+      !ctx ||
+      ctx.state !== 'running' ||
+      !analyser ||
+      !this.fftScratch ||
+      !shouldSampleBasebandSpectrum(isTx, Date.now(), this.rxSignalActiveUntilMs)
+    ) {
       this.basebandBinsScratch.fill(-120);
       return { active: false, isTx, binsDb: this.basebandBinsScratch, maxAudioHz };
     }
@@ -704,6 +721,9 @@ export class SdrAudioEngine {
     this.toneTelemetry = { mode: 'IDLE', markActive: true, freqHz: 0, activeUntilMs: 0 };
     this.activeRttyPlayback = null;
     this.activeCwPlayback = null;
+    if (!this.currentParams.isTransmitting) {
+      this.rxSignalActiveUntilMs = 0;
+    }
     if (this.activeToneGain && this.ctx) {
       try {
         this.activeToneGain.gain.cancelScheduledValues(this.ctx.currentTime);
@@ -804,6 +824,9 @@ export class SdrAudioEngine {
         freqHz: pitchHz,
         activeUntilMs: nowMs + totalMs + 80,
       };
+      if (!isSidetone) {
+        this.rxSignalActiveUntilMs = Math.max(this.rxSignalActiveUntilMs, nowMs + totalMs + 80);
+      }
 
       osc.onended = () => {
         if (this.activeToneOsc === osc) {
@@ -872,6 +895,9 @@ export class SdrAudioEngine {
         freqHz: markHz,
         activeUntilMs: nowMs + totalMs + 80,
       };
+      if (!isSidetone) {
+        this.rxSignalActiveUntilMs = Math.max(this.rxSignalActiveUntilMs, nowMs + totalMs + 80);
+      }
       g.gain.setTargetAtTime(0, t, 0.006);
 
       osc.onended = () => {
@@ -941,6 +967,9 @@ export class SdrAudioEngine {
         freqHz: markHz,
         activeUntilMs: nowMs + totalMs + 80,
       };
+      if (!isSidetone) {
+        this.rxSignalActiveUntilMs = Math.max(this.rxSignalActiveUntilMs, nowMs + totalMs + 80);
+      }
       g.gain.setTargetAtTime(0, t, 0.006);
 
       osc.onended = () => {
@@ -996,6 +1025,9 @@ export class SdrAudioEngine {
         freqHz: baseFreqHz,
         activeUntilMs: Date.now() + totalMs + 80,
       };
+      if (!isSidetone) {
+        this.rxSignalActiveUntilMs = Math.max(this.rxSignalActiveUntilMs, Date.now() + totalMs + 80);
+      }
 
       osc.onended = () => {
         if (this.activeToneOsc === osc) {
@@ -1051,6 +1083,9 @@ export class SdrAudioEngine {
         freqHz: 1900,
         activeUntilMs: Date.now() + durationMs,
       };
+      if (!isSidetone) {
+        this.rxSignalActiveUntilMs = Math.max(this.rxSignalActiveUntilMs, Date.now() + durationMs + 80);
+      }
 
       src.onended = () => {
         if (this.activeToneBufferSrc === src) {
